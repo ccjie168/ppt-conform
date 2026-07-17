@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppt-conform"
+version = "0.1.0"
+description = "PPT standard template conversion agent"
+requires-python = ">=3.10"
+dependencies = [
+    "python-pptx>=0.6.23",
+    "lxml>=4.9.3",
+    "pillow>=10.2.0",
+    "pydantic>=2.6.1",
+    "pytest>=7.4.4",
+    "click>=8.1.7",
+    "pyyaml>=6.0.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
