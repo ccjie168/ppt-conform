@@ -1,0 +1,35 @@
+# Master Styles Configuration
+# 定义4种主样式模板 (F1-F4)
+
+master_styles:
+  F1:
+    name: "白色简约"
+    background_color: "#FFFFFF"
+    text_color: "#333333"
+    accent_color: "#2196F3"
+    description: "简约白色背景，适合商务演示"
+
+  F2:
+    name: "浅绿色清新"
+    background_color: "#E8F5E9"
+    text_color: "#1B5E20"
+    accent_color: "#4CAF50"
+    description: "清新浅绿色背景，适合环保、自然主题"
+
+  F3:
+    name: "深绿色商务"
+    background_color: "#1B5E20"
+    text_color: "#FFFFFF"
+    accent_color: "#81C784"
+    description: "深绿色商务风格，适合专业演示"
+
+  F4:
+    name: "渐变科技"
+    background:
+      type: "gradient"
+      start_color: "#1A237E"
+      end_color: "#0D47A1"
+      direction: "vertical"
+    text_color: "#FFFFFF"
+    accent_color: "#42A5F5"
+    description: "科技感渐变背景，适合创新、技术主题"

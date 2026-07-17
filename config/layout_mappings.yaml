@@ -1,0 +1,75 @@
+# Layout Mappings Configuration
+# 定义每种主样式的布局映射
+
+layouts:
+  F1:
+    cover:
+      index: 0
+      name: "封面"
+      description: "标题页面布局"
+    section:
+      index: 1
+      name: "章节"
+      description: "章节分隔页布局"
+    content:
+      index: 2
+      name: "内容"
+      description: "内容页布局"
+    closing:
+      index: 3
+      name: "结尾"
+      description: "结束页布局"
+
+  F2:
+    cover:
+      index: 0
+      name: "封面"
+      description: "标题页面布局"
+    section:
+      index: 1
+      name: "章节"
+      description: "章节分隔页布局"
+    content:
+      index: 2
+      name: "内容"
+      description: "内容页布局"
+    closing:
+      index: 3
+      name: "结尾"
+      description: "结束页布局"
+
+  F3:
+    cover:
+      index: 0
+      name: "封面"
+      description: "标题页面布局"
+    section:
+      index: 1
+      name: "章节"
+      description: "章节分隔页布局"
+    content:
+      index: 2
+      name: "内容"
+      description: "内容页布局"
+    closing:
+      index: 3
+      name: "结尾"
+      description: "结束页布局"
+
+  F4:
+    cover:
+      index: 0
+      name: "封面"
+      description: "标题页面布局"
+    section:
+      index: 1
+      name: "章节"
+      description: "章节分隔页布局"
+    content:
+      index: 2
+      name: "内容"
+      description: "内容页布局"
+    closing:
+      index: 3
+      name: "结尾"
+      description: "结束页布局"
