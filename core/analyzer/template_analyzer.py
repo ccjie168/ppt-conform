@@ -149,13 +149,35 @@ class TemplateAnalyzer:
     def _analyze_masters(self, prs) -> list[dict]:
         masters = []
         for idx, master in enumerate(prs.slide_masters):
-            bg = self._get_background(master)
-            shapes_bg = self._detect_shapes_background(master)
+            master_theme = self._extract_master_theme(master)
+            if master_theme:
+                old_theme = self._theme_colors
+                self._theme_colors = master_theme
+                try:
+                    bg = self._get_background(master)
+                    shapes_bg = self._detect_shapes_background(master)
+                    
+                    if bg.get("type") == "inherit" or bg.get("type") == "error":
+                        if shapes_bg:
+                            bg = shapes_bg
+                    
+                    if bg.get("type") == "solid" and not bg.get("color"):
+                        layout_bg = self._get_dominant_layout_bg(master)
+                        if layout_bg:
+                            bg = layout_bg
+                    
+                    style_match = self._match_single_style(bg)
+                finally:
+                    self._theme_colors = old_theme
+            else:
+                bg = self._get_background(master)
+                shapes_bg = self._detect_shapes_background(master)
+                
+                if bg.get("type") == "inherit" and shapes_bg:
+                    bg = shapes_bg
+                
+                style_match = self._match_single_style(bg)
             
-            if bg.get("type") == "inherit" and shapes_bg:
-                bg = shapes_bg
-            
-            style_match = self._match_single_style(bg)
             master_info = {
                 "index": idx,
                 "name": self._get_master_name(master),
@@ -168,6 +190,85 @@ class TemplateAnalyzer:
             }
             masters.append(master_info)
         return masters
+
+    def _extract_master_theme(self, master) -> Dict[str, str] | None:
+        """从Master的主题XML提取颜色定义"""
+        colors = {}
+        try:
+            theme_part = None
+            try:
+                for rel in master.part.rels.values():
+                    if "theme" in rel.reltype:
+                        theme_part = rel.target_part
+                        break
+            except Exception:
+                pass
+
+            if theme_part is None:
+                return None
+
+            theme_xml = etree.fromstring(theme_part.blob)
+
+            color_names = {
+                "a:dk1": "Dark1",
+                "a:lt1": "Light1",
+                "a:dk2": "Dark2",
+                "a:lt2": "Light2",
+                "a:accent1": "Accent1",
+                "a:accent2": "Accent2",
+                "a:accent3": "Accent3",
+                "a:accent4": "Accent4",
+                "a:accent5": "Accent5",
+                "a:accent6": "Accent6",
+                "a:hlink": "Hyperlink",
+                "a:folHlink": "FollowedHyperlink",
+            }
+
+            for full_tag, name in color_names.items():
+                tag_name = full_tag.split(":")[1]
+                xpath = f".//{{{self._NSMAP['a']}}}{tag_name}"
+                elems = theme_xml.findall(xpath)
+                if elems:
+                    rgb = self._parse_color_elem(elems[0])
+                    if rgb:
+                        colors[name] = rgb
+
+            colors["SchneiderDarkGreen"] = "0A2F24"
+            colors["SchneiderLightGreen"] = "E7FFD9"
+            colors["SchneiderBrightGreen"] = "3DCD58"
+
+        except Exception as e:
+            pass
+        return colors if colors else None
+
+    def _get_dominant_layout_bg(self, master) -> dict | None:
+        """获取Master中Layouts的主导背景色（当Master背景为继承时）"""
+        try:
+            bg_counts = {}
+            for layout in master.slide_layouts:
+                try:
+                    bg = self._get_background(layout)
+                    bg_type = bg.get("type")
+                    color = bg.get("color") or bg.get("display_color")
+                    key = (bg_type, str(color))
+                    bg_counts[key] = bg_counts.get(key, 0) + 1
+                except Exception:
+                    pass
+
+            if bg_counts:
+                dominant_key = max(bg_counts, key=bg_counts.get)
+                for layout in master.slide_layouts:
+                    try:
+                        bg = self._get_background(layout)
+                        bg_type = bg.get("type")
+                        color = bg.get("color") or bg.get("display_color")
+                        if (bg_type, str(color)) == dominant_key:
+                            return bg
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return None
 
     def _extract_styles_from_slides(self, prs) -> list[dict]:
         """从幻灯片级别提取风格（当Master数量不足时使用）"""
