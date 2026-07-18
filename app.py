@@ -19,7 +19,6 @@ st.set_page_config(
 st.title("📊 PPT 标准模板转换智能体")
 st.markdown("将 Trae/豆包生成的 PPT 按照公司标准模板进行转换，自动去除水印，确保品牌一致性")
 
-# 创建标签页
 tab1, tab2 = st.tabs(["🔄 PPT 转换", "🔍 模板分析"])
 
 # ============ Tab 1: PPT 转换 ============
@@ -30,17 +29,50 @@ with tab1:
         st.subheader("📁 上传待转换的 PPT")
         uploaded_file = st.file_uploader("选择要转换的 PPT 文件", type=["pptx"], key="input_ppt")
 
-        st.subheader("🎨 上传标准模板（可选）")
-        template_file = st.file_uploader("选择公司标准模板 PPT（不传则使用内置模板）", type=["pptx"], key="template_ppt")
+        st.subheader("🎨 上传标准模板（必选）")
+        template_file = st.file_uploader("选择公司标准模板 PPT", type=["pptx"], key="template_ppt")
 
     with col2:
         st.subheader("⚙️ 转换配置")
-        master_style = st.selectbox(
-            "选择模板风格",
-            [("F1", "白色简约"), ("F2", "浅绿色清新"), ("F3", "深绿色商务"), ("F4", "渐变科技")],
-            format_func=lambda x: x[1],
-            key="master_style"
-        )
+
+        # 动态加载模板的 master 风格
+        master_options = []
+        if template_file is not None:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tpl_path = os.path.join(tmpdir, "temp_template.pptx")
+                with open(tpl_path, "wb") as f:
+                    f.write(template_file.getbuffer())
+                try:
+                    analyzer = TemplateAnalyzer()
+                    result = analyzer.analyze(tpl_path)
+                    for m in result["masters"]:
+                        bg = m["background"]
+                        bg_desc = ""
+                        if bg.get("color"):
+                            bg_desc = f" (#{bg['color']})"
+                        elif bg.get("gradient"):
+                            bg_desc = " (渐变)"
+                        elif bg.get("theme_color"):
+                            bg_desc = f" [{bg['theme_color']}]"
+                        master_options.append({
+                            "index": m["index"],
+                            "name": m["name"],
+                            "background": bg_desc,
+                        })
+                except Exception:
+                    master_options = []
+
+        if master_options:
+            master_choice = st.selectbox(
+                "选择模板风格（来自上传的模板）",
+                master_options,
+                format_func=lambda x: f"Master #{x['index']}{x['background']}"
+            )
+            selected_master_index = master_choice["index"]
+        else:
+            st.warning("请先上传标准模板，风格列表将自动加载")
+            selected_master_index = 0
+
         include_header = st.checkbox("包含页眉", value=False, key="include_header")
         include_footer = st.checkbox("包含页脚", value=False, key="include_footer")
         include_icon = st.checkbox("包含图标", value=False, key="include_icon")
@@ -56,31 +88,26 @@ with tab1:
             file_details["标准模板"] = template_file.name
         st.write(file_details)
 
-    convert_button = st.button("🚀 开始转换", disabled=uploaded_file is None)
+    convert_button = st.button("🚀 开始转换", disabled=uploaded_file is None or template_file is None)
 
-    if convert_button and uploaded_file:
+    if convert_button and uploaded_file and template_file:
         with st.spinner("正在转换中..."):
             with tempfile.TemporaryDirectory() as tmpdir:
                 input_path = os.path.join(tmpdir, uploaded_file.name)
                 output_filename = f"转换后的_{uploaded_file.name}"
                 output_path = os.path.join(tmpdir, output_filename)
-                template_path = None
+                template_path = os.path.join(tmpdir, "custom_template.pptx")
 
                 with open(input_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
-                if template_file is not None:
-                    template_path = os.path.join(tmpdir, "custom_template.pptx")
-                    with open(template_path, "wb") as f:
-                        f.write(template_file.getbuffer())
-                    st.info("📄 使用自定义模板...")
-                else:
-                    st.info("📄 使用内置模板...")
+                with open(template_path, "wb") as f:
+                    f.write(template_file.getbuffer())
 
                 config = UserConfig(
                     input_path=input_path,
                     output_path=output_path,
-                    master_style=master_style[0],
+                    master_style=str(selected_master_index),
                     include_header=include_header,
                     include_footer=include_footer,
                     include_icon=include_icon
@@ -123,13 +150,15 @@ with tab1:
 
                 except Exception as e:
                     st.error(f"❌ 转换出错: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
                     if os.path.exists(output_path):
                         os.remove(output_path)
 
 # ============ Tab 2: 模板分析 ============
 with tab2:
     st.subheader("🔍 分析公司标准模板")
-    st.markdown("上传公司模板，自动识别其中的 master 风格，并与程序中的 F1-F4 四种风格进行匹配。")
+    st.markdown("上传公司模板，自动识别其中的 master 和 layout 结构。")
 
     analyze_template = st.file_uploader(
         "上传要分析的标准模板 PPT", type=["pptx"], key="analyze_template"
@@ -152,7 +181,6 @@ with tab2:
                     st.write(f"- **Layout 总数**: {result['total_layouts']}")
                     st.write(f"- **现有 Slide 数**: {result['total_slides']}")
 
-                    # 主题颜色
                     if result.get("theme_colors"):
                         st.markdown("### 🎨 主题颜色（从模板提取）")
                         color_data = []
@@ -160,48 +188,33 @@ with tab2:
                             color_data.append({
                                 "颜色名称": name,
                                 "HEX 值": f"#{hex_color}",
-                                "预览": f"⬜",
                             })
                         st.table(color_data)
 
-                    # 风格匹配结果
-                    st.markdown("### 🎯 风格匹配结果")
-                    match_data = []
-                    for m in result["style_matches"]:
+                    st.markdown("### 📋 Master 列表")
+                    master_data = []
+                    for m in result["masters"]:
                         bg = m["background"]
-                        bg_str = f"{bg['type']}"
+                        bg_str = bg["type"]
                         if bg.get("color"):
                             bg_str += f" (#{bg['color']})"
                         elif bg.get("gradient"):
                             bg_str += f" ({' → '.join(bg['gradient'])})"
                         if bg.get("theme_color"):
                             bg_str += f" [主题: {bg['theme_color']}]"
-                        match_data.append({
-                            "Master 序号": m["master_index"],
-                            "Master 名称": m["master_name"],
+                        master_data.append({
+                            "Master 序号": m["index"],
+                            "Master 名称": m["name"],
                             "背景": bg_str,
-                            "匹配风格": m["matched_style"],
-                            "风格名称": m["matched_name"],
-                            "置信度": m["confidence"],
+                            "Layout 数量": len(m["layouts"]),
                         })
-                    st.table(match_data)
+                    st.table(master_data)
 
-                    # 每个 master 的详细信息
-                    st.markdown("### 📋 Master 详细信息")
+                    st.markdown("### 📝 Layout 详细信息")
                     for master in result["masters"]:
                         with st.expander(
                             f"Master #{master['index']}: {master['name']}（{len(master['layouts'])} 个 layout）"
                         ):
-                            bg = master["background"]
-                            bg_str = f"类型: {bg['type']}"
-                            if bg.get("color"):
-                                bg_str += f" | 颜色: #{bg['color']}"
-                            if bg.get("gradient"):
-                                bg_str += f" | 渐变: {' → '.join(bg['gradient'])}"
-                            st.write(f"**背景**: {bg_str}")
-                            st.write(f"**字体**: 主标题={master['fonts'].get('major')} | 正文={master['fonts'].get('minor')}")
-
-                            st.write("**Layouts:**")
                             layout_data = []
                             for layout in master["layouts"]:
                                 layout_data.append({
@@ -212,36 +225,6 @@ with tab2:
                                 })
                             st.table(layout_data)
 
-                    # 匹配建议
-                    st.markdown("### 💡 匹配建议")
-                    unmatched = [m for m in result["style_matches"] if m["matched_style"] == "?"]
-                    matched = [m for m in result["style_matches"] if m["matched_style"] != "?"]
-
-                    if matched:
-                        st.write("✅ 已匹配的 master：")
-                        for m in matched:
-                            st.write(f"- Master #{m['master_index']} → **{m['matched_style']}** ({m['matched_name']})")
-
-                    if unmatched:
-                        st.write("⚠️ 未匹配的 master（颜色不在 F1-F4 预设范围内）：")
-                        for m in unmatched:
-                            bg = m["background"]
-                            st.write(
-                                f"- Master #{m['master_index']}（背景: {bg.get('color') or bg.get('type')}）"
-                                f"—— 可在 config/master_styles.yaml 中扩展风格定义"
-                            )
-
-                    if len(result["masters"]) < 4:
-                        st.warning(
-                            f"模板中只有 {len(result['masters'])} 个 master，"
-                            f"但程序定义了 F1-F4 共 4 种风格。建议公司模板包含 4 个 master。"
-                        )
-                    elif len(result["masters"]) > 4:
-                        st.warning(
-                            f"模板中有 {len(result['masters'])} 个 master，"
-                            f"超过 F1-F4 的 4 种。多余 master 不会被使用。"
-                        )
-
                 except Exception as e:
                     st.error(f"❌ 分析出错: {str(e)}")
                     import traceback
@@ -251,9 +234,7 @@ st.markdown("---")
 st.markdown("### ℹ️ 关于应用")
 st.markdown("""
 - **水印去除**: 自动检测并去除 "TRAE AI 生成"、"豆包 AI" 等水印
-- **模板选择**: 可使用内置模板（F1-F4）或上传自定义公司标准模板
-- **模板分析**: 自动识别公司模板的 master 风格，匹配 F1-F4
-- **四种风格**: 白色简约 / 浅绿色清新 / 深绿色商务 / 渐变科技
+- **动态风格**: 上传模板后自动加载其中的 master 风格供选择
 - **质量校验**: 水印检测、字体白名单、布局有效性等多维度校验
 - **失败阻断**: 校验失败时不输出任何文件，确保产物质量
 """)

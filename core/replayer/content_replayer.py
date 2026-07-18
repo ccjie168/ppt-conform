@@ -14,27 +14,31 @@ class ContentReplayer:
         self.template_path = template_path
 
     def replay(self, content_models: list[SlideContentModel], config: UserConfig) -> str:
-        # 创建演示文稿：优先使用自定义模板，否则用默认
         if self.template_path and Path(self.template_path).exists():
             prs = Presentation(self.template_path)
             self._clear_slides(prs)
         else:
             prs = Presentation()
 
-        # 预扫描模板中可用的 layouts，构建名称到索引的映射
-        layout_map = self._build_layout_map(prs)
+        selected_master_index = int(config.master_style) if config.master_style.isdigit() else 0
+
+        if selected_master_index >= len(prs.slide_masters):
+            selected_master_index = 0
+
+        selected_master = prs.slide_masters[selected_master_index]
+
+        layout_map = self._build_layout_map_from_master(selected_master)
 
         for model in content_models:
             layout_name = self._determine_layout(model)
             layout_index = self._resolve_layout_index(layout_name, layout_map, config.master_style)
 
-            # 容错：索引越界时回退到 0
-            if layout_index >= len(prs.slide_layouts):
+            slide_layouts = list(selected_master.slide_layouts)
+            if layout_index >= len(slide_layouts):
                 layout_index = 0
 
-            slide = prs.slides.add_slide(prs.slide_layouts[layout_index])
+            slide = prs.slides.add_slide(slide_layouts[layout_index])
 
-            # 填充标题
             if model.title:
                 try:
                     if slide.shapes.title is not None:
@@ -42,7 +46,6 @@ class ContentReplayer:
                 except Exception:
                     pass
 
-            # 填充正文（文本、表格、图片）
             self._fill_body(slide, model.body_blocks)
 
         prs.save(config.output_path)
@@ -60,10 +63,10 @@ class ContentReplayer:
         for child in list(sldIdLst):
             sldIdLst.remove(child)
 
-    def _build_layout_map(self, prs) -> dict:
-        """扫描所有 slide_layouts，构建 {名称小写: 索引} 映射"""
+    def _build_layout_map_from_master(self, master) -> dict:
+        """扫描 master 的所有 slide_layouts，构建 {名称小写: 索引} 映射"""
         mapping = {}
-        for idx, layout in enumerate(prs.slide_layouts):
+        for idx, layout in enumerate(master.slide_layouts):
             name = (layout.name or "").lower()
             mapping[name] = idx
             if "封面" in name or "cover" in name or "title" in name:
