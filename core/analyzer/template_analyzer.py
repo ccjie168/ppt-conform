@@ -120,6 +120,11 @@ class TemplateAnalyzer:
         masters = []
         for idx, master in enumerate(prs.slide_masters):
             bg = self._get_background(master)
+            shapes_bg = self._detect_shapes_background(master)
+            
+            if bg.get("type") == "inherit" and shapes_bg:
+                bg = shapes_bg
+            
             style_match = self._match_single_style(bg)
             master_info = {
                 "index": idx,
@@ -133,6 +138,57 @@ class TemplateAnalyzer:
             }
             masters.append(master_info)
         return masters
+
+    def _detect_shapes_background(self, master) -> dict | None:
+        """检测Master中形状的背景填充（有些模板通过形状实现背景颜色）"""
+        try:
+            for shape in master.shapes:
+                if shape.shape_type == 1:
+                    try:
+                        fill = shape.fill
+                        from pptx.enum.dml import MSO_FILL
+                        fill_type = fill.type
+                        
+                        if fill_type == MSO_FILL.SOLID:
+                            color = fill.fore_color
+                            try:
+                                rgb = str(color.rgb)
+                                return {"type": "solid", "color": rgb, "gradient": None, "theme_color": None, "display_color": rgb}
+                            except Exception:
+                                try:
+                                    tc = str(color.theme_color)
+                                    clean_tc = self._clean_theme_color_name(tc)
+                                    rgb = self._resolve_theme_color(clean_tc)
+                                    if rgb:
+                                        return {"type": "solid", "color": rgb, "gradient": None, "theme_color": tc, "display_color": rgb}
+                                except Exception:
+                                    pass
+                        
+                        elif fill_type == MSO_FILL.GRADIENT:
+                            stops = []
+                            display_colors = []
+                            for stop in fill.gradient_stops:
+                                try:
+                                    rgb = str(stop.color.rgb)
+                                    stops.append(rgb)
+                                    display_colors.append(rgb)
+                                except Exception:
+                                    try:
+                                        tc = str(stop.color.theme_color)
+                                        clean_tc = self._clean_theme_color_name(tc)
+                                        rgb = self._resolve_theme_color(clean_tc)
+                                        stops.append(rgb if rgb else "?")
+                                        display_colors.append(rgb if rgb else "?")
+                                    except Exception:
+                                        stops.append("?")
+                                        display_colors.append("?")
+                            if stops:
+                                return {"type": "gradient", "color": None, "gradient": stops, "theme_color": None, "display_color": display_colors}
+                    except Exception:
+                        pass
+            return None
+        except Exception:
+            return None
 
     def _analyze_layouts(self, master) -> list[dict]:
         layouts = []
@@ -162,9 +218,6 @@ class TemplateAnalyzer:
             from pptx.enum.dml import MSO_FILL
             fill_type_int = fill.type
 
-            if fill_type_int is None:
-                return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
-
             if fill_type_int == MSO_FILL.SOLID:
                 return self._parse_solid_fill(fill)
             elif fill_type_int == MSO_FILL.GRADIENT:
@@ -173,9 +226,20 @@ class TemplateAnalyzer:
                 return self._parse_background_fill(element)
             elif fill_type_int == MSO_FILL.PICTURE:
                 return {"type": "picture", "color": None, "gradient": None, "theme_color": None, "display_color": None}
+            elif fill_type_int is None:
+                xml_result = self._parse_background_from_xml(element)
+                if xml_result.get("type") != "inherit":
+                    return xml_result
+                return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
             else:
                 return {"type": str(fill_type_int), "color": None, "gradient": None, "theme_color": None, "display_color": None}
         except Exception as e:
+            try:
+                xml_result = self._parse_background_from_xml(element)
+                if xml_result.get("type") != "inherit":
+                    return xml_result
+            except Exception:
+                pass
             return {"type": "error", "color": None, "gradient": None, "theme_color": None, "display_color": None, "error": str(e)}
 
     def _parse_solid_fill(self, fill) -> dict:
@@ -233,6 +297,53 @@ class TemplateAnalyzer:
             "theme_color": theme_stops if any(theme_stops) else None,
             "display_color": display_colors,
         }
+
+    def _parse_background_from_xml(self, element) -> dict:
+        """直接从 XML 解析背景信息（用于 fill.type 为 None 的情况）"""
+        try:
+            xml_elem = element.element
+            sp_elem = xml_elem.find(".//p:sp", self._NSMAP)
+            if sp_elem is None:
+                sp_elem = xml_elem.find(".//p:spPr", self._NSMAP)
+            if sp_elem is not None:
+                fill_elem = sp_elem.find(".//a:fill", self._NSMAP)
+                if fill_elem is not None:
+                    solid_fill = fill_elem.find(".//a:solidFill", self._NSMAP)
+                    if solid_fill is not None:
+                        rgb_elem = solid_fill.find(".//a:rgbClr", self._NSMAP)
+                        if rgb_elem is not None:
+                            rgb = rgb_elem.get("val", "").upper()
+                            return {"type": "solid", "color": rgb, "gradient": None, "theme_color": None, "display_color": rgb}
+                        scheme_clr = solid_fill.find(".//a:schemeClr", self._NSMAP)
+                        if scheme_clr is not None:
+                            val = scheme_clr.get("val", "")
+                            theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                            actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
+                            return {"type": "solid", "color": actual_rgb, "gradient": None, "theme_color": val.upper() if val else None, "display_color": actual_rgb}
+                    grad_fill = fill_elem.find(".//a:gradFill", self._NSMAP)
+                    if grad_fill is not None:
+                        stops = []
+                        display_colors = []
+                        for gs in grad_fill.findall(".//a:gs", self._NSMAP):
+                            solid_fill_gs = gs.find(".//a:solidFill", self._NSMAP)
+                            if solid_fill_gs is not None:
+                                rgb_elem_gs = solid_fill_gs.find(".//a:rgbClr", self._NSMAP)
+                                if rgb_elem_gs is not None:
+                                    rgb = rgb_elem_gs.get("val", "").upper()
+                                    stops.append(rgb)
+                                    display_colors.append(rgb)
+                                else:
+                                    scheme_clr_gs = solid_fill_gs.find(".//a:schemeClr", self._NSMAP)
+                                    if scheme_clr_gs is not None:
+                                        val = scheme_clr_gs.get("val", "")
+                                        theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                                        actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
+                                        stops.append(actual_rgb if actual_rgb else "?")
+                                        display_colors.append(actual_rgb if actual_rgb else "?")
+                        return {"type": "gradient", "color": None, "gradient": stops, "theme_color": None, "display_color": display_colors}
+            return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
+        except Exception:
+            return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
 
     def _parse_background_fill(self, element) -> dict:
         """解析 BACKGROUND 类型填充（通过 XML 直接获取）"""
