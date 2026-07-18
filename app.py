@@ -483,64 +483,63 @@ with tab1:
                     include_icon=include_icon
                 )
 
-                try:
-                    st.info("🔍 步骤0: 源文件检查...")
-                    validator = Validator()
-                    source_report = validator.validate(input_path)
-                    source_fail = [i for i in source_report.issues if i.level == "fail"]
-                    if source_fail:
-                        st.error("❌ 源文件检查失败")
-                        for issue in source_fail:
-                            st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
-                        raise ValueError("源文件校验失败，已终止转换")
+                st.info("🔍 步骤0: 源文件检查...")
+                validator = Validator()
+                source_report = validator.validate(input_path)
+                source_fail = [i for i in source_report.issues if i.level == "fail"]
+                if source_fail:
+                    st.error("❌ 源文件检查失败")
+                    for issue in source_fail:
+                        st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
+                else:
+                    try:
+                        st.info("🔍 步骤1: 检测并去除水印...")
+                        extractor = PptxExtractor()
+                        content_models = extractor.extract(input_path)
 
-                    st.info("🔍 步骤1: 检测并去除水印...")
-                    extractor = PptxExtractor()
-                    content_models = extractor.extract(input_path)
+                        st.info("📄 步骤2: 加载模板...")
+                        registry = TemplateRegistry()
 
-                    st.info("📄 步骤2: 加载模板...")
-                    registry = TemplateRegistry()
+                        st.info("✏️ 步骤3: 重放内容到新模板...")
+                        replayer = ContentReplayer(registry, template_path=template_path)
+                        temp_output = replayer.replay(content_models, config)
 
-                    st.info("✏️ 步骤3: 重放内容到新模板...")
-                    replayer = ContentReplayer(registry, template_path=template_path)
-                    temp_output = replayer.replay(content_models, config)
+                        st.info("✅ 步骤4: 质量校验...")
+                        report = validator.validate(temp_output)
 
-                    st.info("✅ 步骤4: 质量校验...")
-                    report = validator.validate(temp_output)
+                        fail_issues = [i for i in report.issues if i.level == "fail"]
+                        warn_issues = [i for i in report.issues if i.level == "warning"]
 
-                    fail_issues = [i for i in report.issues if i.level == "fail"]
-                    warn_issues = [i for i in report.issues if i.level == "warning"]
+                        if not fail_issues:
+                            st.success(f"🎉 转换成功！共 {len(content_models)} 页")
+                            st.info(f"校验结果: {report.summary}")
 
-                    if not fail_issues:
-                        st.success(f"🎉 转换成功！共 {len(content_models)} 页")
-                        st.info(f"校验结果: {report.summary}")
+                            if warn_issues:
+                                st.warning(f"⚠️ 发现 {len(warn_issues)} 项警告，建议检查")
+                                for issue in warn_issues[:5]:
+                                    st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
 
-                        if warn_issues:
-                            st.warning(f"⚠️ 发现 {len(warn_issues)} 项警告，建议检查")
-                            for issue in warn_issues[:5]:
-                                st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
+                            with open(output_path, "rb") as f:
+                                st.download_button(
+                                    label="📥 下载转换后的 PPT",
+                                    data=f,
+                                    file_name=output_filename,
+                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                                )
+                        else:
+                            st.error("❌ 校验失败，未生成输出文件")
+                            st.markdown("### 失败详情")
+                            for issue in report.issues:
+                                st.write(f"**[{issue.level}] {issue.rule_id}**: {issue.message}")
+                            if os.path.exists(output_path):
+                                os.remove(output_path)
 
-                        with open(output_path, "rb") as f:
-                            st.download_button(
-                                label="📥 下载转换后的 PPT",
-                                data=f,
-                                file_name=output_filename,
-                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                            )
-                    else:
-                        st.error("❌ 校验失败，未生成输出文件")
-                        st.markdown("### 失败详情")
-                        for issue in report.issues:
-                            st.write(f"**[{issue.level}] {issue.rule_id}**: {issue.message}")
+                    except Exception as e:
+                        st.error(f"❌ 转换出错: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
                         if os.path.exists(output_path):
                             os.remove(output_path)
-
-                except Exception as e:
-                    st.error(f"❌ 转换出错: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
-                    if os.path.exists(output_path):
-                        os.remove(output_path)
 
 # ============ Tab 2: 模板分析 ============
 with tab2:
