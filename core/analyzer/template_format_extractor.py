@@ -152,16 +152,15 @@ class TemplateFormatExtractor:
             pass
         return fmt
 
-    def extract_theme_fonts(self, template_path: str) -> dict:
+    def extract_theme_fonts(self, template_path: str, master_index: int = 0) -> dict:
         """从模板主题提取字体方案"""
         prs = Presentation(template_path)
-        theme_part = prs.slide_masters[0].part if prs.slide_masters else None
-        if not theme_part:
+        if not prs.slide_masters or master_index >= len(prs.slide_masters):
             return {}
+        theme_part = prs.slide_masters[master_index].part
 
         theme_fonts = {"major": None, "minor": None}
         try:
-            # 查找主题关联
             for rel in theme_part.rels.values():
                 if "theme" in rel.reltype:
                     theme_element = etree.fromstring(rel.target_part.blob)
@@ -184,3 +183,85 @@ class TemplateFormatExtractor:
             pass
 
         return theme_fonts
+
+    def extract_theme_colors(self, template_path: str, master_index: int = 0) -> dict:
+        """从模板主题提取颜色方案"""
+        prs = Presentation(template_path)
+        if not prs.slide_masters or master_index >= len(prs.slide_masters):
+            return {}
+        theme_part = prs.slide_masters[master_index].part
+
+        colors = {}
+        try:
+            for rel in theme_part.rels.values():
+                if "theme" in rel.reltype:
+                    theme_element = etree.fromstring(rel.target_part.blob)
+                    color_scheme = theme_element.find(".//a:clrScheme", self._NSMAP)
+                    if color_scheme is not None:
+                        for child in color_scheme:
+                            tag = child.tag.split('}')[-1]
+                            srgb = child.find("a:srgbClr", self._NSMAP)
+                            if srgb is not None:
+                                colors[tag] = srgb.get("val")
+                            sys_clr = child.find("a:sysClr", self._NSMAP)
+                            if sys_clr is not None:
+                                colors[tag] = sys_clr.get("lastClr", "")
+                    break
+        except Exception:
+            pass
+
+        return colors
+
+    def get_text_color_for_master(self, template_path: str, master_index: int = 0) -> str | None:
+        """根据Master背景获取合适的文字颜色
+
+        浅色背景返回深色文字（dk1），深色背景返回浅色文字（lt1）
+        """
+        try:
+            from core.analyzer.template_analyzer import TemplateAnalyzer
+            analyzer = TemplateAnalyzer()
+            result = analyzer.analyze(template_path)
+            masters = result.get("masters", [])
+            if master_index < len(masters):
+                master_info = masters[master_index]
+                bg = master_info.get("background", {})
+                bg_type = bg.get("type", "solid")
+                bg_color = bg.get("color")
+                
+                colors = self.extract_theme_colors(template_path, master_index)
+                
+                # 渐变背景：取渐变中最浅的颜色判断，或默认深色背景用白色
+                if bg_type == "gradient":
+                    gradient_colors = bg.get("display_color") or bg.get("gradient_colors") or []
+                    if gradient_colors:
+                        # 检查渐变中是否有深色
+                        has_dark = any(self._is_dark_color(c) for c in gradient_colors if c)
+                        if has_dark:
+                            return colors.get("lt1", "FFFFFF")
+                        else:
+                            return colors.get("dk1", "000000")
+                    # 默认渐变背景用白色文字
+                    return colors.get("lt1", "FFFFFF")
+                
+                # 纯色背景
+                if bg_color:
+                    if self._is_dark_color(bg_color):
+                        return colors.get("lt1", "FFFFFF")
+                    else:
+                        return colors.get("dk1", "000000")
+        except Exception:
+            pass
+        return None
+
+    def _is_dark_color(self, hex_color: str) -> bool:
+        """判断颜色是否为深色（基于亮度）"""
+        try:
+            hex_color = hex_color.lstrip('#')
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            # 计算相对亮度
+            luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+            return luminance < 0.5
+        except Exception:
+            return False

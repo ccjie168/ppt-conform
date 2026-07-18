@@ -18,6 +18,8 @@ class ContentReplayer:
         self.template_path = template_path
         self.template_formats: dict = {}
         self.theme_fonts: dict = {}
+        self.default_text_color: str | None = None
+        self.title_text_color: str | None = None
 
         if template_path and Path(template_path).exists():
             extractor = TemplateFormatExtractor()
@@ -57,6 +59,31 @@ class ContentReplayer:
             selected_master_index = 0
 
         selected_master = output_prs.slide_masters[selected_master_index]
+
+        # 根据所选Master设置默认文字颜色（深色背景用白色文字，浅色背景用深色文字）
+        if self.template_path and Path(self.template_path).exists():
+            try:
+                extractor = TemplateFormatExtractor()
+                self.default_text_color = extractor.get_text_color_for_master(
+                    self.template_path, selected_master_index
+                )
+                self.title_text_color = self.default_text_color
+                # 同时更新template_formats中的颜色
+                if self.default_text_color:
+                    if "body" not in self.template_formats:
+                        self.template_formats["body"] = {}
+                    if not self.template_formats["body"].get("color"):
+                        self.template_formats["body"]["color"] = self.default_text_color
+                    if "title" not in self.template_formats:
+                        self.template_formats["title"] = {}
+                    if not self.template_formats["title"].get("color"):
+                        self.template_formats["title"]["color"] = self.title_text_color
+                # 更新主题字体（使用对应Master的主题）
+                self.theme_fonts = extractor.extract_theme_fonts(
+                    self.template_path, selected_master_index
+                )
+            except Exception:
+                pass
 
         for slide_idx, model in enumerate(content_models):
             if selected_master:
@@ -326,10 +353,12 @@ class ContentReplayer:
         if run_data.get("underline") is not None:
             font.underline = run_data["underline"]
 
-        # 颜色：标题使用模板要求的颜色，正文保留原颜色
+        # 颜色：标题使用模板要求的颜色，正文保留原颜色（无颜色时用默认）
         color = run_data.get("color")
         if is_title and template_fmt and template_fmt.get("color"):
             color = template_fmt["color"]
+        elif not color and self.default_text_color:
+            color = self.default_text_color
         if color:
             try:
                 font.color.rgb = RGBColor.from_string(color)
