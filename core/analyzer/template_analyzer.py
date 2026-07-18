@@ -28,7 +28,17 @@ class TemplateAnalyzer:
 
         masters_info = self._analyze_masters(self._prs)
 
-        style_matches = self._match_styles(self._prs)
+        style_matches = [
+            {
+                "master_index": m["index"],
+                "master_name": m["name"],
+                "background": m["background"],
+                "matched_style": m["style_id"],
+                "matched_name": m["style_name"],
+                "confidence": "高",
+            }
+            for m in masters_info
+        ]
 
         if len(masters_info) < 4 and len(self._prs.slides) >= 4:
             slide_styles = self._extract_styles_from_slides(self._prs)
@@ -67,37 +77,60 @@ class TemplateAnalyzer:
 
             theme_xml = etree.fromstring(theme_part.blob)
 
-            color_names = {
-                "a:dk1": "Dark1",
-                "a:lt1": "Light1",
-                "a:dk2": "Dark2",
-                "a:lt2": "Light2",
-                "a:accent1": "Accent1",
-                "a:accent2": "Accent2",
-                "a:accent3": "Accent3",
-                "a:accent4": "Accent4",
-                "a:accent5": "Accent5",
-                "a:accent6": "Accent6",
-                "a:hlink": "Hyperlink",
-                "a:folHlink": "FollowedHyperlink",
-            }
+            raw_colors = {}
+            color_tags = [
+                "dk1", "lt1", "dk2", "lt2",
+                "accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
+                "hlink", "folHlink",
+                "bg1", "bg2", "tx1", "tx2",
+            ]
 
-            for full_tag, name in color_names.items():
-                tag_name = full_tag.split(":")[1]
+            for tag_name in color_tags:
                 xpath = f".//{{{self._NSMAP['a']}}}{tag_name}"
                 elems = theme_xml.findall(xpath)
                 if elems:
                     rgb = self._parse_color_elem(elems[0])
                     if rgb:
-                        colors[name] = rgb
+                        raw_colors[tag_name] = rgb
 
-            for idx in range(1, 7):
-                xpath = f".//a:accent{idx}", self._NSMAP
-                elems = theme_xml.findall(f".//{{{self._NSMAP['a']}}}accent{idx}")
-                if elems:
-                    rgb = self._parse_color_elem(elems[0])
-                    if rgb:
-                        colors[f"Accent{idx}"] = rgb
+            name_mapping = {
+                "dk1": "Dark1",
+                "lt1": "Light1",
+                "dk2": "Dark2",
+                "lt2": "Light2",
+                "accent1": "Accent1",
+                "accent2": "Accent2",
+                "accent3": "Accent3",
+                "accent4": "Accent4",
+                "accent5": "Accent5",
+                "accent6": "Accent6",
+                "hlink": "Hyperlink",
+                "folHlink": "FollowedHyperlink",
+            }
+
+            for tag, name in name_mapping.items():
+                if tag in raw_colors:
+                    colors[name] = raw_colors[tag]
+
+            if "bg1" in raw_colors:
+                colors["Background1"] = raw_colors["bg1"]
+            elif "lt1" in raw_colors:
+                colors["Background1"] = raw_colors["lt1"]
+
+            if "bg2" in raw_colors:
+                colors["Background2"] = raw_colors["bg2"]
+            elif "lt2" in raw_colors:
+                colors["Background2"] = raw_colors["lt2"]
+
+            if "tx1" in raw_colors:
+                colors["Text1"] = raw_colors["tx1"]
+            elif "dk1" in raw_colors:
+                colors["Text1"] = raw_colors["dk1"]
+
+            if "tx2" in raw_colors:
+                colors["Text2"] = raw_colors["tx2"]
+            elif "dk2" in raw_colors:
+                colors["Text2"] = raw_colors["dk2"]
 
         except Exception as e:
             pass
@@ -150,34 +183,61 @@ class TemplateAnalyzer:
         masters = []
         for idx, master in enumerate(prs.slide_masters):
             master_theme = self._extract_master_theme(master)
+            theme_name = self._get_master_theme_name(master)
+            
+            theme_style_match = None
+            if theme_name:
+                theme_style_match = self._match_style_by_theme_name(theme_name)
+            
             if master_theme:
                 old_theme = self._theme_colors
                 self._theme_colors = master_theme
                 try:
                     bg = self._get_background(master)
                     shapes_bg = self._detect_shapes_background(master)
-                    
+
                     if bg.get("type") == "inherit" or bg.get("type") == "error":
                         if shapes_bg:
                             bg = shapes_bg
-                    
+
                     if bg.get("type") == "solid" and not bg.get("color"):
                         layout_bg = self._get_dominant_layout_bg(master)
                         if layout_bg:
                             bg = layout_bg
-                    
+
                     style_match = self._match_single_style(bg)
+
+                    if theme_style_match:
+                        if style_match["style_id"] == "?":
+                            style_match = theme_style_match
+                            if not bg.get("color") or bg.get("color") == "FFFFFF":
+                                bg = self._fill_bg_from_style_id(bg, theme_style_match["style_id"])
+                        elif style_match["style_id"] != theme_style_match["style_id"]:
+                            style_match = theme_style_match
+                            bg = self._fill_bg_from_style_id(bg, theme_style_match["style_id"])
+                    elif style_match["style_id"] == "?":
+                        layout_bg = self._get_dominant_layout_bg(master)
+                        if layout_bg:
+                            layout_style = self._match_single_style(layout_bg)
+                            if layout_style["style_id"] != "?":
+                                style_match = layout_style
+                                bg = layout_bg
                 finally:
                     self._theme_colors = old_theme
             else:
                 bg = self._get_background(master)
                 shapes_bg = self._detect_shapes_background(master)
-                
+
                 if bg.get("type") == "inherit" and shapes_bg:
                     bg = shapes_bg
-                
+
                 style_match = self._match_single_style(bg)
-            
+
+                if theme_style_match:
+                    if style_match["style_id"] == "?" or style_match["style_id"] != theme_style_match["style_id"]:
+                        style_match = theme_style_match
+                        bg = self._fill_bg_from_style_id(bg, theme_style_match["style_id"])
+
             master_info = {
                 "index": idx,
                 "name": self._get_master_name(master),
@@ -209,29 +269,60 @@ class TemplateAnalyzer:
 
             theme_xml = etree.fromstring(theme_part.blob)
 
-            color_names = {
-                "a:dk1": "Dark1",
-                "a:lt1": "Light1",
-                "a:dk2": "Dark2",
-                "a:lt2": "Light2",
-                "a:accent1": "Accent1",
-                "a:accent2": "Accent2",
-                "a:accent3": "Accent3",
-                "a:accent4": "Accent4",
-                "a:accent5": "Accent5",
-                "a:accent6": "Accent6",
-                "a:hlink": "Hyperlink",
-                "a:folHlink": "FollowedHyperlink",
-            }
+            raw_colors = {}
+            color_tags = [
+                "dk1", "lt1", "dk2", "lt2",
+                "accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
+                "hlink", "folHlink",
+                "bg1", "bg2", "tx1", "tx2",
+            ]
 
-            for full_tag, name in color_names.items():
-                tag_name = full_tag.split(":")[1]
+            for tag_name in color_tags:
                 xpath = f".//{{{self._NSMAP['a']}}}{tag_name}"
                 elems = theme_xml.findall(xpath)
                 if elems:
                     rgb = self._parse_color_elem(elems[0])
                     if rgb:
-                        colors[name] = rgb
+                        raw_colors[tag_name] = rgb
+
+            name_mapping = {
+                "dk1": "Dark1",
+                "lt1": "Light1",
+                "dk2": "Dark2",
+                "lt2": "Light2",
+                "accent1": "Accent1",
+                "accent2": "Accent2",
+                "accent3": "Accent3",
+                "accent4": "Accent4",
+                "accent5": "Accent5",
+                "accent6": "Accent6",
+                "hlink": "Hyperlink",
+                "folHlink": "FollowedHyperlink",
+            }
+
+            for tag, name in name_mapping.items():
+                if tag in raw_colors:
+                    colors[name] = raw_colors[tag]
+
+            if "bg1" in raw_colors:
+                colors["Background1"] = raw_colors["bg1"]
+            elif "lt1" in raw_colors:
+                colors["Background1"] = raw_colors["lt1"]
+
+            if "bg2" in raw_colors:
+                colors["Background2"] = raw_colors["bg2"]
+            elif "lt2" in raw_colors:
+                colors["Background2"] = raw_colors["lt2"]
+
+            if "tx1" in raw_colors:
+                colors["Text1"] = raw_colors["tx1"]
+            elif "dk1" in raw_colors:
+                colors["Text1"] = raw_colors["dk1"]
+
+            if "tx2" in raw_colors:
+                colors["Text2"] = raw_colors["tx2"]
+            elif "dk2" in raw_colors:
+                colors["Text2"] = raw_colors["dk2"]
 
             colors["SchneiderDarkGreen"] = "0A2F24"
             colors["SchneiderLightGreen"] = "E7FFD9"
@@ -240,6 +331,46 @@ class TemplateAnalyzer:
         except Exception as e:
             pass
         return colors if colors else None
+
+    def _get_master_theme_name(self, master) -> str | None:
+        """获取Master的主题名称"""
+        try:
+            for rel in master.part.rels.values():
+                if "theme" in rel.reltype:
+                    theme_xml = etree.fromstring(rel.target_part.blob)
+                    return theme_xml.get("name", "")
+        except Exception:
+            pass
+        return None
+
+    def _match_style_by_theme_name(self, theme_name: str) -> dict | None:
+        """根据主题名称匹配风格（作为后备方案）"""
+        name_lower = theme_name.lower()
+
+        if "gradient" in name_lower:
+            return {"style_id": "F4", "style_name": "渐变科技", "confidence": "中"}
+        elif "dark green" in name_lower or "darkgreen" in name_lower:
+            return {"style_id": "F3", "style_name": "深绿色商务", "confidence": "中"}
+        elif "light green" in name_lower or "lightgreen" in name_lower:
+            return {"style_id": "F2", "style_name": "浅绿色清新", "confidence": "中"}
+        elif "white" in name_lower:
+            return {"style_id": "F1", "style_name": "白色简约", "confidence": "中"}
+        return None
+
+    def _fill_bg_from_style_id(self, bg: dict, style_id: str) -> dict:
+        """根据风格ID填充背景色信息"""
+        colors_map = {
+            "F1": {"type": "solid", "color": "FFFFFF", "display_color": "FFFFFF"},
+            "F2": {"type": "solid", "color": "E7FFD9", "display_color": "E7FFD9"},
+            "F3": {"type": "solid", "color": "0A2F24", "display_color": "0A2F24"},
+            "F4": {"type": "gradient", "color": None, "gradient": ["0A2F24", "3DCD58"], "display_color": ["0A2F24", "3DCD58"]},
+        }
+        if style_id in colors_map:
+            new_bg = dict(bg)
+            for key, value in colors_map[style_id].items():
+                new_bg[key] = value
+            return new_bg
+        return bg
 
     def _get_dominant_layout_bg(self, master) -> dict | None:
         """获取Master中Layouts的主导背景色（当Master背景为继承时）"""
@@ -312,9 +443,24 @@ class TemplateAnalyzer:
         """检测Master中形状的背景填充（有些模板通过形状实现背景颜色）"""
         try:
             from pptx.enum.shapes import MSO_SHAPE_TYPE
-            
+
+            slide_width = None
+            slide_height = None
+            try:
+                slide_width = master.part.package.presentation_part.presentation.slide_width
+                slide_height = master.part.package.presentation_part.presentation.slide_height
+            except Exception:
+                pass
+
             for shape in master.shapes:
                 try:
+                    if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                        if slide_width and slide_height:
+                            if (shape.left <= 100 and shape.top <= 100 and
+                                shape.width >= slide_width - 200 and
+                                shape.height >= slide_height - 200):
+                                return {"type": "picture", "color": None, "gradient": None, "theme_color": None, "display_color": "图片背景", "is_fullscreen": True}
+
                     fill = shape.fill
                     from pptx.enum.dml import MSO_FILL
                     fill_type = fill.type
@@ -544,7 +690,7 @@ class TemplateAnalyzer:
                         scheme_clr = solid_fill.find(".//a:schemeClr", self._NSMAP)
                         if scheme_clr is not None:
                             val = scheme_clr.get("val", "")
-                            theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                            theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Background1", "bg2": "Background2", "tx1": "Text1", "tx2": "Text2"}.get(val)
                             actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
                             return {"type": "solid", "color": actual_rgb, "gradient": None, "theme_color": val.upper() if val else None, "display_color": actual_rgb}
                     grad_fill = fill_elem.find(".//a:gradFill", self._NSMAP)
@@ -563,7 +709,7 @@ class TemplateAnalyzer:
                                     scheme_clr_gs = solid_fill_gs.find(".//a:schemeClr", self._NSMAP)
                                     if scheme_clr_gs is not None:
                                         val = scheme_clr_gs.get("val", "")
-                                        theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                                        theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Background1", "bg2": "Background2", "tx1": "Text1", "tx2": "Text2"}.get(val)
                                         actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
                                         stops.append(actual_rgb if actual_rgb else "?")
                                         display_colors.append(actual_rgb if actual_rgb else "?")
@@ -612,7 +758,7 @@ class TemplateAnalyzer:
                         if scheme_clr is not None:
                             val = scheme_clr.get("val", "")
                             if val:
-                                theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                                theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Background1", "bg2": "Background2", "tx1": "Text1", "tx2": "Text2"}.get(val)
                                 actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
                                 return {"type": "solid", "color": actual_rgb, "gradient": None, "theme_color": val.upper() if val else None, "display_color": actual_rgb}
 
@@ -633,7 +779,7 @@ class TemplateAnalyzer:
                                     scheme_clr_gs = solid_fill_gs.find(".//a:schemeClr", self._NSMAP)
                                     if scheme_clr_gs is not None:
                                         val = scheme_clr_gs.get("val", "")
-                                        theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                                        theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Background1", "bg2": "Background2", "tx1": "Text1", "tx2": "Text2"}.get(val)
                                         actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
                                         stops.append(actual_rgb if actual_rgb else "?")
                                         display_colors.append(actual_rgb if actual_rgb else "?")
@@ -655,10 +801,10 @@ class TemplateAnalyzer:
     def _resolve_theme_color(self, theme_color_str: str) -> str | None:
         """将主题颜色名解析为实际 RGB"""
         mapping = {
-            "BACKGROUND_1": self._theme_colors.get("Light1"),
-            "BACKGROUND_2": self._theme_colors.get("Light2"),
-            "TEXT_1": self._theme_colors.get("Dark1"),
-            "TEXT_2": self._theme_colors.get("Dark2"),
+            "BACKGROUND_1": self._theme_colors.get("Background1"),
+            "BACKGROUND_2": self._theme_colors.get("Background2"),
+            "TEXT_1": self._theme_colors.get("Text1"),
+            "TEXT_2": self._theme_colors.get("Text2"),
             "ACCENT_1": self._theme_colors.get("Accent1"),
             "ACCENT_2": self._theme_colors.get("Accent2"),
             "ACCENT_3": self._theme_colors.get("Accent3"),
@@ -677,6 +823,10 @@ class TemplateAnalyzer:
             "ACCENT4": self._theme_colors.get("Accent4"),
             "ACCENT5": self._theme_colors.get("Accent5"),
             "ACCENT6": self._theme_colors.get("Accent6"),
+            "BG1": self._theme_colors.get("Background1"),
+            "BG2": self._theme_colors.get("Background2"),
+            "TX1": self._theme_colors.get("Text1"),
+            "TX2": self._theme_colors.get("Text2"),
         }
         return mapping.get(theme_color_str)
 
@@ -758,6 +908,13 @@ class TemplateAnalyzer:
         color = bg.get("color")
         gradient = bg.get("gradient")
         display_color = bg.get("display_color")
+
+        if bg_type == "picture":
+            return {
+                "style_id": "F4",
+                "style_name": "渐变科技",
+                "confidence": "高",
+            }
 
         if bg_type == "gradient" and gradient:
             if len(gradient) >= 2 and any(g and g != "?" for g in gradient):
@@ -896,7 +1053,10 @@ class TemplateAnalyzer:
         bg_type = bg.get("type")
         color = bg.get("color")
         display_color = bg.get("display_color")
-        
+
+        if bg_type == "picture":
+            return "图片渐变背景"
+
         if bg_type == "gradient":
             gradient = bg.get("gradient", [])
             if gradient and len(gradient) >= 2:
