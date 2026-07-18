@@ -142,50 +142,102 @@ class TemplateAnalyzer:
     def _detect_shapes_background(self, master) -> dict | None:
         """检测Master中形状的背景填充（有些模板通过形状实现背景颜色）"""
         try:
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+            
             for shape in master.shapes:
-                if shape.shape_type == 1:
-                    try:
-                        fill = shape.fill
-                        from pptx.enum.dml import MSO_FILL
-                        fill_type = fill.type
-                        
-                        if fill_type == MSO_FILL.SOLID:
-                            color = fill.fore_color
-                            try:
-                                rgb = str(color.rgb)
+                try:
+                    fill = shape.fill
+                    from pptx.enum.dml import MSO_FILL
+                    fill_type = fill.type
+                    
+                    if fill_type == MSO_FILL.SOLID:
+                        color = fill.fore_color
+                        try:
+                            rgb = str(color.rgb)
+                            if rgb and rgb != "None":
                                 return {"type": "solid", "color": rgb, "gradient": None, "theme_color": None, "display_color": rgb}
+                        except Exception:
+                            try:
+                                tc = str(color.theme_color)
+                                clean_tc = self._clean_theme_color_name(tc)
+                                rgb = self._resolve_theme_color(clean_tc)
+                                if rgb:
+                                    return {"type": "solid", "color": rgb, "gradient": None, "theme_color": tc, "display_color": rgb}
+                            except Exception:
+                                pass
+                    
+                    elif fill_type == MSO_FILL.GRADIENT:
+                        stops = []
+                        display_colors = []
+                        for stop in fill.gradient_stops:
+                            try:
+                                rgb = str(stop.color.rgb)
+                                stops.append(rgb)
+                                display_colors.append(rgb)
                             except Exception:
                                 try:
-                                    tc = str(color.theme_color)
+                                    tc = str(stop.color.theme_color)
                                     clean_tc = self._clean_theme_color_name(tc)
                                     rgb = self._resolve_theme_color(clean_tc)
-                                    if rgb:
-                                        return {"type": "solid", "color": rgb, "gradient": None, "theme_color": tc, "display_color": rgb}
+                                    stops.append(rgb if rgb else "?")
+                                    display_colors.append(rgb if rgb else "?")
                                 except Exception:
-                                    pass
-                        
-                        elif fill_type == MSO_FILL.GRADIENT:
-                            stops = []
-                            display_colors = []
-                            for stop in fill.gradient_stops:
-                                try:
-                                    rgb = str(stop.color.rgb)
-                                    stops.append(rgb)
-                                    display_colors.append(rgb)
-                                except Exception:
+                                    stops.append("?")
+                                    display_colors.append("?")
+                        if stops and any(s != "?" for s in stops):
+                            return {"type": "gradient", "color": None, "gradient": stops, "theme_color": None, "display_color": display_colors}
+                except Exception:
+                    pass
+
+            for shape in master.shapes:
+                try:
+                    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                        for sub_shape in shape.shapes:
+                            try:
+                                fill = sub_shape.fill
+                                fill_type = fill.type
+                                
+                                if fill_type == MSO_FILL.SOLID:
+                                    color = fill.fore_color
                                     try:
-                                        tc = str(stop.color.theme_color)
-                                        clean_tc = self._clean_theme_color_name(tc)
-                                        rgb = self._resolve_theme_color(clean_tc)
-                                        stops.append(rgb if rgb else "?")
-                                        display_colors.append(rgb if rgb else "?")
+                                        rgb = str(color.rgb)
+                                        if rgb and rgb != "None":
+                                            return {"type": "solid", "color": rgb, "gradient": None, "theme_color": None, "display_color": rgb}
                                     except Exception:
-                                        stops.append("?")
-                                        display_colors.append("?")
-                            if stops:
-                                return {"type": "gradient", "color": None, "gradient": stops, "theme_color": None, "display_color": display_colors}
-                    except Exception:
-                        pass
+                                        try:
+                                            tc = str(color.theme_color)
+                                            clean_tc = self._clean_theme_color_name(tc)
+                                            rgb = self._resolve_theme_color(clean_tc)
+                                            if rgb:
+                                                return {"type": "solid", "color": rgb, "gradient": None, "theme_color": tc, "display_color": rgb}
+                                        except Exception:
+                                            pass
+                                
+                                elif fill_type == MSO_FILL.GRADIENT:
+                                    stops = []
+                                    display_colors = []
+                                    for stop in fill.gradient_stops:
+                                        try:
+                                            rgb = str(stop.color.rgb)
+                                            stops.append(rgb)
+                                            display_colors.append(rgb)
+                                        except Exception:
+                                            try:
+                                                tc = str(stop.color.theme_color)
+                                                clean_tc = self._clean_theme_color_name(tc)
+                                                rgb = self._resolve_theme_color(clean_tc)
+                                                stops.append(rgb if rgb else "?")
+                                                display_colors.append(rgb if rgb else "?")
+                                            except Exception:
+                                                stops.append("?")
+                                                display_colors.append("?")
+                                    if stops and any(s != "?" for s in stops):
+                                        return {"type": "gradient", "color": None, "gradient": stops, "theme_color": None, "display_color": display_colors}
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
             return None
         except Exception:
             return None

@@ -45,8 +45,12 @@ def _ensure_persist_dir():
 
 def _save_template(template_file):
     _ensure_persist_dir()
+    content = template_file.getbuffer()
     with open(LAST_TEMPLATE_FILE, "wb") as f:
-        f.write(template_file.getbuffer())
+        f.write(content)
+    st.session_state["_template_content"] = content
+    st.session_state["_template_name"] = template_file.name
+    st.session_state["_template_size"] = template_file.size
 
 
 def _save_config(config_data):
@@ -64,10 +68,15 @@ def _load_last_config():
 
 
 def _has_last_template():
-    return os.path.exists(LAST_TEMPLATE_FILE)
+    return os.path.exists(LAST_TEMPLATE_FILE) or "_template_content" in st.session_state
 
 
 def _get_last_template_info():
+    if "_template_name" in st.session_state:
+        return {
+            "name": st.session_state["_template_name"],
+            "size": st.session_state["_template_size"],
+        }
     try:
         config = _load_last_config()
         if config:
@@ -85,6 +94,9 @@ def _clear_last_template():
         os.remove(LAST_TEMPLATE_FILE)
     if os.path.exists(LAST_CONFIG_FILE):
         os.remove(LAST_CONFIG_FILE)
+    for key in ["_template_content", "_template_name", "_template_size"]:
+        if key in st.session_state:
+            del st.session_state[key]
 
 
 def _analyze_template_file(template_file, is_reload=False) -> dict | None:
@@ -136,12 +148,22 @@ def _load_last_template():
 
     try:
         config = _load_last_config()
-        with open(LAST_TEMPLATE_FILE, "rb") as f:
-            file_content = f.read()
+        
+        if "_template_content" in st.session_state:
+            file_content = st.session_state["_template_content"]
+            template_name = st.session_state.get("_template_name", "上次使用的模板")
+            template_size = st.session_state.get("_template_size", len(file_content))
+        elif os.path.exists(LAST_TEMPLATE_FILE):
+            with open(LAST_TEMPLATE_FILE, "rb") as f:
+                file_content = f.read()
+            template_name = config.get("template_name", "上次使用的模板") if config else "上次使用的模板"
+            template_size = os.path.getsize(LAST_TEMPLATE_FILE)
+        else:
+            return None, None
 
         class MockFile:
-            name = config.get("template_name", "上次使用的模板") if config else "上次使用的模板"
-            size = os.path.getsize(LAST_TEMPLATE_FILE)
+            name = template_name
+            size = template_size
 
             def getbuffer(self):
                 return file_content
@@ -185,16 +207,20 @@ with col_reload:
         help="使用上次上传的模板",
     )
 
+auto_load_done = False
+
 if global_template is not None:
     st.success(f"✅ 已上传模板：{global_template.name}（{global_template.size / 1024:.1f} KB）")
     _save_template(global_template)
     _analyze_template_file(global_template)
+    auto_load_done = True
 elif use_last_template:
     mock_file, config = _load_last_template()
     if mock_file:
         st.success(f"✅ 已加载上次模板：{mock_file.name}（{mock_file.size / 1024:.1f} KB）")
         _analyze_template_file(mock_file, is_reload=True)
         global_template = mock_file
+        auto_load_done = True
 else:
     last_info = _get_last_template_info()
     if last_info and _has_last_template():
@@ -207,6 +233,13 @@ else:
         mock_file, config = _load_last_template()
         if mock_file:
             _analyze_template_file(mock_file, is_reload=True)
+            global_template = mock_file
+            auto_load_done = True
+
+if auto_load_done and global_template:
+    template_info = st.session_state.get("_template_file")
+    if template_info:
+        st.markdown(f"📎 **当前使用的标准模板**: {template_info['name']}")
 
 st.markdown("---")
 
