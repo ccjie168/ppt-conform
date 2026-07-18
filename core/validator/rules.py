@@ -81,3 +81,56 @@ class FontWhitelistRule(ValidationRule):
                                 ))
 
         return issues
+
+
+class ContentOverflowRule(ValidationRule):
+    def __init__(self):
+        super().__init__("R020", "内容溢出检查", "fail", "内容不得超出幻灯片边界")
+        self.margin = 91440
+
+    def check(self, pptx_path: str) -> list[ValidationIssue]:
+        issues = []
+        prs = Presentation(pptx_path)
+        slide_width = prs.slide_width
+        slide_height = prs.slide_height
+
+        for slide_idx, slide in enumerate(prs.slides):
+            for shape_idx, shape in enumerate(slide.shapes):
+                try:
+                    left = shape.left
+                    top = shape.top
+                    width = shape.width
+                    height = shape.height
+
+                    if left < -self.margin:
+                        issues.append(ValidationIssue(
+                            level=self.level,
+                            rule_id=self.rule_id,
+                            message=f"形状{shape_idx}左侧溢出: left={left/914400:.1f}英寸",
+                            slide_index=slide_idx
+                        ))
+                    if top < -self.margin:
+                        issues.append(ValidationIssue(
+                            level=self.level,
+                            rule_id=self.rule_id,
+                            message=f"形状{shape_idx}顶部溢出: top={top/914400:.1f}英寸",
+                            slide_index=slide_idx
+                        ))
+                    if left + width > slide_width + self.margin:
+                        issues.append(ValidationIssue(
+                            level=self.level,
+                            rule_id=self.rule_id,
+                            message=f"形状{shape_idx}右侧溢出: right={(left+width)/914400:.1f}英寸",
+                            slide_index=slide_idx
+                        ))
+                    if top + height > slide_height + self.margin:
+                        issues.append(ValidationIssue(
+                            level=self.level,
+                            rule_id=self.rule_id,
+                            message=f"形状{shape_idx}底部溢出: bottom={(top+height)/914400:.1f}英寸",
+                            slide_index=slide_idx
+                        ))
+                except Exception:
+                    pass
+
+        return issues

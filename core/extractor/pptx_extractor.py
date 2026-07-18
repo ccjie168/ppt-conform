@@ -6,7 +6,7 @@ from core.watermark.detector import WatermarkDetector
 
 
 class PptxExtractor:
-    """PPT 内容抽取器：从源 PPT 抽取内容模型，自动过滤水印"""
+    """PPT 内容抽取器：从源 PPT 抽取内容模型，保留原始格式，自动过滤水印"""
 
     def __init__(self):
         self.watermark_detector = WatermarkDetector()
@@ -28,8 +28,8 @@ class PptxExtractor:
         title = None
         body_blocks = []
         notes_text = None
+        raw_shapes = []
 
-        # 提取备注
         try:
             if slide.has_notes_slide:
                 notes_text = slide.notes_slide.notes_text_frame.text.strip() or None
@@ -37,7 +37,10 @@ class PptxExtractor:
             pass
 
         for shape in slide.shapes:
-            # 跳过占位符中的标题（单独处理）
+            shape_data = self._extract_shape(shape, slide_index)
+            if shape_data:
+                raw_shapes.append(shape_data)
+
             if shape == slide.shapes.title:
                 title_text = self._get_shape_text(shape)
                 if title_text:
@@ -46,13 +49,11 @@ class PptxExtractor:
                         title = title_text
                 continue
 
-            # 文本框 / 占位符
             if shape.has_text_frame:
                 blocks = self._extract_text_blocks(shape, slide_index)
                 body_blocks.extend(blocks)
                 continue
 
-            # 表格
             if shape.has_table:
                 table_data = self._extract_table(shape.table)
                 if table_data:
@@ -64,7 +65,6 @@ class PptxExtractor:
                     ))
                 continue
 
-            # 图片：保留 blob 引用，后续重放时复制
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                 try:
                     image = shape.image
@@ -85,7 +85,6 @@ class PptxExtractor:
                     pass
                 continue
 
-            # 组合形状：递归处理
             if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
                 blocks = self._extract_group(shape, slide_index)
                 body_blocks.extend(blocks)
@@ -96,11 +95,115 @@ class PptxExtractor:
             title=title,
             body_blocks=body_blocks,
             notes=notes_text,
-            original_layout_type=self._detect_layout_type(slide, slide_index)
+            original_layout_type=self._detect_layout_type(slide, slide_index),
+            raw_shapes=raw_shapes,
         )
 
+    def _extract_shape(self, shape, slide_index: int) -> dict | None:
+        try:
+            if shape == slide_index:
+                pass
+            shape_type = shape.shape_type
+
+            if shape.has_text_frame:
+                return self._extract_text_shape(shape, slide_index)
+            elif shape_type == MSO_SHAPE_TYPE.PICTURE:
+                return self._extract_image_shape(shape)
+            elif shape.has_table:
+                return self._extract_table_shape(shape)
+            elif shape_type == MSO_SHAPE_TYPE.GROUP:
+                return self._extract_group_shape(shape, slide_index)
+            else:
+                return None
+        except Exception:
+            return None
+
+    def _extract_text_shape(self, shape, slide_index: int) -> dict:
+        paragraphs = []
+        tf = shape.text_frame
+
+        for paragraph in tf.paragraphs:
+            para_data = {
+                "text": paragraph.text,
+                "level": paragraph.level or 0,
+                "alignment": str(paragraph.alignment) if paragraph.alignment else None,
+                "runs": [],
+            }
+
+            for run in paragraph.runs:
+                run_data = {
+                    "text": run.text,
+                    "font_name": run.font.name,
+                    "font_size": run.font.size,
+                    "bold": run.font.bold,
+                    "italic": run.font.italic,
+                    "underline": run.font.underline,
+                    "color": None,
+                }
+                try:
+                    if run.font.color and run.font.color.rgb:
+                        run_data["color"] = str(run.font.color.rgb)
+                except Exception:
+                    pass
+                para_data["runs"].append(run_data)
+
+            paragraphs.append(para_data)
+
+        return {
+            "type": "text",
+            "left": shape.left,
+            "top": shape.top,
+            "width": shape.width,
+            "height": shape.height,
+            "paragraphs": paragraphs,
+            "shape_name": shape.name,
+        }
+
+    def _extract_image_shape(self, shape) -> dict:
+        try:
+            image = shape.image
+            return {
+                "type": "image",
+                "left": shape.left,
+                "top": shape.top,
+                "width": shape.width,
+                "height": shape.height,
+                "blob": image.blob,
+                "ext": image.ext,
+            }
+        except Exception:
+            return None
+
+    def _extract_table_shape(self, shape) -> dict:
+        try:
+            table_data = self._extract_table(shape.table)
+            return {
+                "type": "table",
+                "left": shape.left,
+                "top": shape.top,
+                "width": shape.width,
+                "height": shape.height,
+                "data": table_data,
+            }
+        except Exception:
+            return None
+
+    def _extract_group_shape(self, group, slide_index: int) -> dict:
+        shapes_data = []
+        for shape in group.shapes:
+            shape_data = self._extract_shape(shape, slide_index)
+            if shape_data:
+                shapes_data.append(shape_data)
+        return {
+            "type": "group",
+            "left": group.left,
+            "top": group.top,
+            "width": group.width,
+            "height": group.height,
+            "shapes": shapes_data,
+        }
+
     def _extract_text_blocks(self, shape, slide_index: int) -> list[ContentBlock]:
-        """从文本框/占位符抽取段落，保留层级"""
         blocks = []
         tf = shape.text_frame
 
@@ -109,7 +212,6 @@ class PptxExtractor:
             if not text:
                 continue
 
-            # 水印检测
             watermark_report = self.watermark_detector.detect_text(text, slide_index)
             if watermark_report.detected:
                 continue
@@ -122,7 +224,6 @@ class PptxExtractor:
         return blocks
 
     def _extract_group(self, group, slide_index: int) -> list[ContentBlock]:
-        """递归处理组合形状中的子形状"""
         blocks = []
         for shape in group.shapes:
             if shape.has_text_frame:
@@ -130,7 +231,6 @@ class PptxExtractor:
         return blocks
 
     def _extract_table(self, table) -> list[list[str]]:
-        """抽取表格内容为二维列表"""
         data = []
         for row in table.rows:
             row_data = []
@@ -140,14 +240,12 @@ class PptxExtractor:
         return data
 
     def _get_shape_text(self, shape) -> str:
-        """获取形状中的纯文本"""
         try:
             return shape.text_frame.text.strip()
         except Exception:
             return ""
 
     def _detect_layout_type(self, slide, slide_index: int) -> str:
-        """根据 slide 的 layout 名称推断布局类型"""
         try:
             layout_name = (slide.slide_layout.name or "").lower()
             if "封面" in layout_name or "cover" in layout_name or "title" in layout_name:

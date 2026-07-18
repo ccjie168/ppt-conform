@@ -37,6 +37,7 @@ class SlideContentModel(BaseModel):
     body_blocks: list[ContentBlock]
     notes: str | None = None
     original_layout_type: str | None = None
+    raw_shapes: list[dict] = []
 
 
 class MasterStyle(BaseModel):
