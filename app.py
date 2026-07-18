@@ -3,6 +3,7 @@ import tempfile
 import os
 import json
 from pathlib import Path
+from pptx import Presentation
 
 from core.extractor.pptx_extractor import PptxExtractor
 from core.registry.template_registry import TemplateRegistry
@@ -10,6 +11,44 @@ from core.replayer.content_replayer import ContentReplayer
 from core.validator.validator import Validator
 from core.models import UserConfig
 from core.analyzer import TemplateAnalyzer
+
+
+# 标准16:9宽屏比例（容差）
+WIDESCREEN_16_9_RATIO = 16 / 9
+ASPECT_RATIO_TOLERANCE = 0.02
+
+
+def _check_template_aspect_ratio(template_file) -> tuple[bool, str, str]:
+    """检查模板是否为16:9宽屏比例。
+
+    返回: (是否通过, 比例描述, 错误消息)
+    """
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            tmp_path = tmp.name
+            if hasattr(template_file, "getbuffer"):
+                tmp.write(template_file.getbuffer())
+            else:
+                tmp.write(template_file)
+
+        prs = Presentation(tmp_path)
+        width = prs.slide_width
+        height = prs.slide_height
+        ratio = width / height if height else 0
+
+        os.unlink(tmp_path)
+
+        ratio_str = f"{width / 914400:.2f} x {height / 914400:.2f} 英寸 (比例 {ratio:.3f})"
+
+        if abs(ratio - WIDESCREEN_16_9_RATIO) > ASPECT_RATIO_TOLERANCE:
+            return False, ratio_str, (
+                f"⚠️ 不支持该比例的模板：当前模板为 {ratio_str}，"
+                f"仅支持 16:9 宽屏模板（比例约 1.778）。"
+                f"请上传 16:9 宽屏模板后重试。"
+            )
+        return True, ratio_str, ""
+    except Exception as e:
+        return False, "", f"模板尺寸检查失败: {str(e)}"
 
 st.set_page_config(
     page_title="PPT 标准模板转换智能体",
@@ -191,10 +230,10 @@ col_upload, col_reload = st.columns([3, 1])
 
 with col_upload:
     global_template = st.file_uploader(
-        "选择公司标准模板 PPT",
+        "选择公司标准模板 PPT（仅支持 16:9 宽屏）",
         type=["pptx"],
         key="global_template",
-        help="此模板将在 PPT 转换和模板分析两个页签中共用",
+        help="此模板将在 PPT 转换和模板分析两个页签中共用。仅支持 16:9 宽屏模板，4:3 模板会被拒绝。",
     )
 
 with col_reload:
@@ -210,31 +249,48 @@ with col_reload:
 auto_load_done = False
 
 if global_template is not None:
-    st.success(f"✅ 已上传模板：{global_template.name}（{global_template.size / 1024:.1f} KB）")
-    _save_template(global_template)
-    _analyze_template_file(global_template)
-    auto_load_done = True
+    is_valid, ratio_str, err_msg = _check_template_aspect_ratio(global_template)
+    if not is_valid:
+        st.error(err_msg)
+        # 清理已保存的4:3模板，避免后续误用
+        _clear_last_template()
+        global_template = None
+    else:
+        st.success(f"✅ 已上传模板：{global_template.name}（{global_template.size / 1024:.1f} KB） - 16:9 宽屏 ({ratio_str})")
+        _save_template(global_template)
+        _analyze_template_file(global_template)
+        auto_load_done = True
 elif use_last_template:
     mock_file, config = _load_last_template()
     if mock_file:
-        st.success(f"✅ 已加载上次模板：{mock_file.name}（{mock_file.size / 1024:.1f} KB）")
-        _analyze_template_file(mock_file, is_reload=True)
-        global_template = mock_file
-        auto_load_done = True
+        is_valid, ratio_str, err_msg = _check_template_aspect_ratio(mock_file)
+        if not is_valid:
+            st.error(err_msg)
+            _clear_last_template()
+        else:
+            st.success(f"✅ 已加载上次模板：{mock_file.name}（{mock_file.size / 1024:.1f} KB） - 16:9 宽屏 ({ratio_str})")
+            _analyze_template_file(mock_file, is_reload=True)
+            global_template = mock_file
+            auto_load_done = True
 else:
     last_info = _get_last_template_info()
     if last_info and _has_last_template():
         st.info(f"📋 上次使用的模板：{last_info['name']}（{last_info['size'] / 1024:.1f} KB）")
         st.info("点击「使用上次模板」按钮快速加载，或上传新模板替换")
     else:
-        st.info("👆 请上传公司标准模板，上传后将自动识别其中的风格")
+        st.info("👆 请上传公司标准模板（仅支持 16:9 宽屏），上传后将自动识别其中的风格")
 
     if st.session_state.get("_template_cache_key") is None and _has_last_template():
         mock_file, config = _load_last_template()
         if mock_file:
-            _analyze_template_file(mock_file, is_reload=True)
-            global_template = mock_file
-            auto_load_done = True
+            is_valid, ratio_str, err_msg = _check_template_aspect_ratio(mock_file)
+            if not is_valid:
+                st.error(err_msg)
+                _clear_last_template()
+            else:
+                _analyze_template_file(mock_file, is_reload=True)
+                global_template = mock_file
+                auto_load_done = True
 
 if auto_load_done and global_template:
     template_info = st.session_state.get("_template_file")
@@ -565,4 +621,5 @@ st.markdown("""
 - **颜色预览**: 每个风格选项显示实际背景色预览
 - **质量校验**: 水印检测、字体白名单、布局有效性等多维度校验
 - **失败阻断**: 校验失败时不输出任何文件，确保产物质量
+- **16:9 强制**: 模板输入仅支持 16:9 宽屏，4:3 模板会被拒绝并提示
 """)
