@@ -11,3 +11,4 @@ build/
 *.pptx
 !templates/corporate_template.pptx
 .github_token
+.persist/
