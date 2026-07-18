@@ -126,6 +126,12 @@ class PptxExtractor:
         tf = shape.text_frame
 
         for paragraph in tf.paragraphs:
+            text = paragraph.text.strip()
+            if text:
+                watermark_report = self.watermark_detector.detect_text(text, slide_index)
+                if watermark_report.detected:
+                    continue
+
             para_data = {
                 "text": paragraph.text,
                 "level": paragraph.level or 0,
@@ -164,6 +170,9 @@ class PptxExtractor:
                 para_data["runs"].append(run_data)
 
             paragraphs.append(para_data)
+
+        if not paragraphs:
+            return None
 
         return {
             "type": "text",
