@@ -5,11 +5,19 @@ from core.registry.template_registry import TemplateRegistry
 
 
 class ContentReplayer:
-    def __init__(self, registry: TemplateRegistry):
+    def __init__(self, registry: TemplateRegistry, template_path: str | None = None):
         self.registry = registry
+        self.template_path = template_path
 
     def replay(self, content_models: list[SlideContentModel], config: UserConfig) -> str:
-        prs = Presentation()
+        if self.template_path and Path(self.template_path).exists():
+            prs = Presentation(self.template_path)
+            for slide in list(prs.slides):
+                rId = prs.slides._sldIdLst[0].rId
+                prs.part.drop_rel(rId)
+                prs.slides._sldIdLst.remove(prs.slides._sldIdLst[0])
+        else:
+            prs = Presentation()
 
         for model in content_models:
             layout_name = self._determine_layout(model)

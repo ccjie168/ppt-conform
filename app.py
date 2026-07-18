@@ -87,11 +87,9 @@ if convert_button and uploaded_file:
 
                 st.info("📄 步骤2: 加载模板...")
                 registry = TemplateRegistry()
-                registry.load_master_styles()
-                registry.load_layout_mappings()
 
                 st.info("✏️ 步骤3: 重放内容到新模板...")
-                replayer = ContentReplayer(registry)
+                replayer = ContentReplayer(registry, template_path=template_path)
                 temp_output = replayer.replay(content_models, config)
 
                 st.info("✅ 步骤4: 质量校验...")

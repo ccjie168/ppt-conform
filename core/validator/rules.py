@@ -51,7 +51,7 @@ class WatermarkTextRule(ValidationRule):
 
 class FontWhitelistRule(ValidationRule):
     def __init__(self):
-        super().__init__("R010", "字体白名单检查", "fail", "仅允许使用模板主题字体")
+        super().__init__("R010", "字体白名单检查", "warning", "仅允许使用模板主题字体")
         self.font_whitelist = []
         self._load_fonts()
 
