@@ -28,13 +28,28 @@ class TemplateAnalyzer:
 
         masters_info = self._analyze_masters(self._prs)
 
+        style_matches = self._match_styles(self._prs)
+
+        if len(masters_info) < 4 and len(self._prs.slides) >= 4:
+            slide_styles = self._extract_styles_from_slides(self._prs)
+            for i, slide_style in enumerate(slide_styles):
+                if i < len(masters_info):
+                    masters_info[i]["background"] = slide_style["background"]
+                    masters_info[i]["style"] = slide_style["style"]
+                    masters_info[i]["style_description"] = slide_style["style_description"]
+                    masters_info[i]["name"] = slide_style["name"]
+                    masters_info[i]["style_id"] = slide_style["style_id"]
+                    masters_info[i]["style_name"] = slide_style["style_name"]
+                else:
+                    masters_info.append(slide_style)
+
         return {
             "file": str(template_path),
             "theme_colors": self._theme_colors,
             "masters": masters_info,
             "total_layouts": sum(len(m["layouts"]) for m in masters_info),
             "total_slides": len(self._prs.slides),
-            "style_matches": self._match_styles(self._prs),
+            "style_matches": style_matches,
         }
 
     def _extract_theme_colors(self, prs) -> Dict[str, str]:
@@ -153,6 +168,44 @@ class TemplateAnalyzer:
             }
             masters.append(master_info)
         return masters
+
+    def _extract_styles_from_slides(self, prs) -> list[dict]:
+        """从幻灯片级别提取风格（当Master数量不足时使用）"""
+        styles = []
+        seen_colors = set()
+
+        for slide_idx, slide in enumerate(prs.slides):
+            bg = self._get_background(slide)
+            if not bg:
+                continue
+
+            color_key = bg.get("color") or bg.get("display_color")
+            if isinstance(color_key, list):
+                color_key = tuple(color_key)
+
+            if color_key in seen_colors:
+                continue
+            seen_colors.add(color_key)
+
+            style_match = self._match_single_style(bg)
+
+            style_info = {
+                "index": slide_idx,
+                "name": f"Style_{slide_idx}",
+                "background": bg,
+                "style": style_match,
+                "style_description": self._describe_background(bg),
+                "style_id": style_match["style_id"],
+                "style_name": style_match["style_name"],
+                "layouts": [],
+            }
+
+            styles.append(style_info)
+
+            if len(styles) >= 4:
+                break
+
+        return styles
 
     def _detect_shapes_background(self, master) -> dict | None:
         """检测Master中形状的背景填充（有些模板通过形状实现背景颜色）"""
@@ -617,6 +670,8 @@ class TemplateAnalyzer:
             color_lower = color.lower()
             if self._is_white(color_lower):
                 return {"style_id": "F1", "style_name": "白色简约", "confidence": "高"}
+            elif self._is_gray(color_lower):
+                return {"style_id": "F4", "style_name": "渐变科技", "confidence": "中"}
             elif self._is_light_green(color_lower):
                 return {"style_id": "F2", "style_name": "浅绿色清新", "confidence": "高"}
             elif self._is_dark_green(color_lower):
@@ -652,7 +707,9 @@ class TemplateAnalyzer:
 
     SCHNEIDER_COLORS = {
         "dark_green": {"hex": "0A2F24", "rgb": (10, 47, 36), "brightness": 31},
+        "dark_green_alt": {"hex": "1B5E20", "rgb": (27, 94, 32), "brightness": 51},
         "light_green": {"hex": "E7FFD9", "rgb": (231, 255, 217), "brightness": 234},
+        "light_green_alt": {"hex": "E8F5E9", "rgb": (232, 245, 233), "brightness": 237},
         "bright_green": {"hex": "3DCD58", "rgb": (61, 205, 88), "brightness": 118},
         "white": {"hex": "FFFFFF", "rgb": (255, 255, 255), "brightness": 255},
         "black": {"hex": "000000", "rgb": (0, 0, 0), "brightness": 0},
@@ -661,9 +718,9 @@ class TemplateAnalyzer:
     def _is_white(self, color: str) -> bool:
         try:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-            if r >= 240 and g >= 240 and b >= 240:
+            if r >= 250 and g >= 250 and b >= 250:
                 return True
-            return self._color_match(color, self.SCHNEIDER_COLORS["white"]["hex"], 15)
+            return self._color_match(color, self.SCHNEIDER_COLORS["white"]["hex"], 5)
         except Exception:
             return False
 
@@ -671,6 +728,8 @@ class TemplateAnalyzer:
         try:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
             if self._color_match(color, self.SCHNEIDER_COLORS["light_green"]["hex"], 20):
+                return True
+            if self._color_match(color, self.SCHNEIDER_COLORS["light_green_alt"]["hex"], 20):
                 return True
             if g <= r or g <= b:
                 return False
@@ -689,6 +748,8 @@ class TemplateAnalyzer:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
             if self._color_match(color, self.SCHNEIDER_COLORS["dark_green"]["hex"], 20):
                 return True
+            if self._color_match(color, self.SCHNEIDER_COLORS["dark_green_alt"]["hex"], 20):
+                return True
             if self._color_match(color, self.SCHNEIDER_COLORS["bright_green"]["hex"], 20):
                 return False
             if g <= r or g <= b:
@@ -698,6 +759,20 @@ class TemplateAnalyzer:
                 return False
             brightness = (r + g + b) / 3
             if brightness > 120:
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _is_gray(self, color: str) -> bool:
+        try:
+            r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+            max_val = max(r, g, b)
+            min_val = min(r, g, b)
+            diff = max_val - min_val
+            if diff > 10:
+                return False
+            if r > 240:
                 return False
             return True
         except Exception:
