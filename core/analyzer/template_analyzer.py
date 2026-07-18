@@ -6,39 +6,39 @@ from lxml import etree
 from typing import Any, Dict
 
 
-NSMAP = {
-    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-    "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
-    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-}
-
-
 class TemplateAnalyzer:
     """分析 PPT 模板的结构与风格"""
 
+    _NSMAP = {
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    }
+
     def __init__(self):
         self._theme_colors = {}
+        self._prs = None
 
     def analyze(self, template_path: str) -> dict:
         if not Path(template_path).exists():
             raise FileNotFoundError(f"Template not found: {template_path}")
 
-        prs = Presentation(template_path)
-        self._theme_colors = self._extract_theme_colors(prs)
+        self._prs = Presentation(template_path)
+        self._theme_colors = self._extract_theme_colors(self._prs)
 
-        masters_info = self._analyze_masters(prs)
+        masters_info = self._analyze_masters(self._prs)
 
         return {
             "file": str(template_path),
             "theme_colors": self._theme_colors,
             "masters": masters_info,
             "total_layouts": sum(len(m["layouts"]) for m in masters_info),
-            "total_slides": len(prs.slides),
-            "style_matches": self._match_styles(prs),
+            "total_slides": len(self._prs.slides),
+            "style_matches": self._match_styles(self._prs),
         }
 
     def _extract_theme_colors(self, prs) -> Dict[str, str]:
-        """从主题 XML 提取所有颜色定义"""
+        """从主题 XML 提取所有颜色定义（包括所有 Accent）"""
         colors = {}
         try:
             theme_part = None
@@ -51,9 +51,6 @@ class TemplateAnalyzer:
                 return colors
 
             theme_xml = etree.fromstring(theme_part.blob)
-            clr_scheme = theme_xml.find(".//a:clrScheme", NSMAP)
-            if clr_scheme is None:
-                return colors
 
             color_names = {
                 "a:dk1": "Dark1",
@@ -70,13 +67,14 @@ class TemplateAnalyzer:
                 "a:folHlink": "FollowedHyperlink",
             }
 
-            for elem in clr_scheme:
-                tag_name = etree.QName(elem.tag).localname
-                full_tag = f"a:{tag_name}"
-                if full_tag in color_names:
-                    rgb = self._parse_color_elem(elem)
+            for full_tag, name in color_names.items():
+                tag_name = full_tag.split(":")[1]
+                xpath = f".//{{{self._NSMAP['a']}}}{tag_name}"
+                elems = theme_xml.findall(xpath)
+                if elems:
+                    rgb = self._parse_color_elem(elems[0])
                     if rgb:
-                        colors[color_names[full_tag]] = rgb
+                        colors[name] = rgb
 
         except Exception as e:
             pass
@@ -85,19 +83,25 @@ class TemplateAnalyzer:
     def _parse_color_elem(self, elem) -> str | None:
         """解析颜色元素，返回 RGB 字符串"""
         try:
-            rgb_elem = elem.find(".//a:rgbClr", NSMAP)
+            rgb_elem = elem.find(".//a:rgbClr", self._NSMAP)
             if rgb_elem is not None:
                 val = rgb_elem.get("val", "")
                 if val:
                     return val.upper()
 
-            sys_clr = elem.find(".//a:sysClr", NSMAP)
+            srgb_elem = elem.find(".//a:srgbClr", self._NSMAP)
+            if srgb_elem is not None:
+                val = srgb_elem.get("val", "")
+                if val:
+                    return val.upper()
+
+            sys_clr = elem.find(".//a:sysClr", self._NSMAP)
             if sys_clr is not None:
                 last_clr = sys_clr.get("lastClr", "")
                 if last_clr:
                     return last_clr.upper()
 
-            scheme_clr = elem.find(".//a:schemeClr", NSMAP)
+            scheme_clr = elem.find(".//a:schemeClr", self._NSMAP)
             if scheme_clr is not None:
                 val = scheme_clr.get("val", "")
                 if val:
@@ -115,12 +119,17 @@ class TemplateAnalyzer:
     def _analyze_masters(self, prs) -> list[dict]:
         masters = []
         for idx, master in enumerate(prs.slide_masters):
+            bg = self._get_background(master)
+            style_match = self._match_single_style(bg)
             master_info = {
                 "index": idx,
                 "name": self._get_master_name(master),
-                "background": self._get_background(master),
+                "background": bg,
                 "fonts": self._get_fonts(master),
                 "layouts": self._analyze_layouts(master),
+                "style_id": style_match["style_id"],
+                "style_name": style_match["style_name"],
+                "style_desc": self._describe_background(bg),
             }
             masters.append(master_info)
         return masters
@@ -145,63 +154,155 @@ class TemplateAnalyzer:
             return "(未命名)"
 
     def _get_background(self, element) -> dict:
-        """获取背景信息，解析主题颜色为实际 RGB"""
+        """获取背景信息，处理所有填充类型"""
         try:
             bg = element.background
             fill = bg.fill
-            if fill.type is None:
-                return {"type": "inherit", "color": None, "gradient": None, "theme_color": None}
 
             from pptx.enum.dml import MSO_FILL
-            if fill.type == MSO_FILL.SOLID:
-                color = fill.fore_color
+            fill_type_int = fill.type
+
+            if fill_type_int is None:
+                return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
+
+            if fill_type_int == MSO_FILL.SOLID:
+                return self._parse_solid_fill(fill)
+            elif fill_type_int == MSO_FILL.GRADIENT:
+                return self._parse_gradient_fill(fill)
+            elif fill_type_int == MSO_FILL.BACKGROUND:
+                return self._parse_background_fill(element)
+            elif fill_type_int == MSO_FILL.PICTURE:
+                return {"type": "picture", "color": None, "gradient": None, "theme_color": None, "display_color": None}
+            else:
+                return {"type": str(fill_type_int), "color": None, "gradient": None, "theme_color": None, "display_color": None}
+        except Exception as e:
+            return {"type": "error", "color": None, "gradient": None, "theme_color": None, "display_color": None, "error": str(e)}
+
+    def _parse_solid_fill(self, fill) -> dict:
+        """解析纯色填充"""
+        color = fill.fore_color
+        try:
+            rgb = str(color.rgb)
+            return {"type": "solid", "color": rgb, "gradient": None, "theme_color": None, "display_color": rgb}
+        except Exception:
+            try:
+                theme_color = color.theme_color
+                theme_color_str = str(theme_color)
+                actual_rgb = self._resolve_theme_color(theme_color_str)
+                return {
+                    "type": "solid",
+                    "color": actual_rgb,
+                    "gradient": None,
+                    "theme_color": theme_color_str,
+                    "display_color": actual_rgb,
+                }
+            except Exception:
+                return {"type": "solid", "color": None, "gradient": None, "theme_color": None, "display_color": None}
+
+    def _parse_gradient_fill(self, fill) -> dict:
+        """解析渐变填充"""
+        stops = []
+        display_colors = []
+        theme_stops = []
+        try:
+            for stop in fill.gradient_stops:
                 try:
-                    rgb = str(color.rgb)
-                    return {"type": "solid", "color": rgb, "gradient": None, "theme_color": None}
+                    rgb = str(stop.color.rgb)
+                    stops.append(rgb)
+                    display_colors.append(rgb)
+                    theme_stops.append(None)
                 except Exception:
                     try:
-                        theme_color = color.theme_color
-                        theme_color_str = str(theme_color)
-                        actual_rgb = self._resolve_theme_color(theme_color_str)
-                        return {
-                            "type": "solid",
-                            "color": actual_rgb,
-                            "gradient": None,
-                            "theme_color": theme_color_str,
-                        }
+                        tc = str(stop.color.theme_color)
+                        rgb = self._resolve_theme_color(tc)
+                        stops.append(rgb if rgb else "?")
+                        display_colors.append(rgb if rgb else "?")
+                        theme_stops.append(tc)
                     except Exception:
-                        return {"type": "unknown", "color": None, "gradient": None, "theme_color": None}
-            elif fill.type == MSO_FILL.GRADIENT:
-                stops = []
-                theme_stops = []
-                try:
-                    for stop in fill.gradient_stops:
-                        try:
-                            stops.append(str(stop.color.rgb))
-                            theme_stops.append(None)
-                        except Exception:
-                            try:
-                                tc = str(stop.color.theme_color)
-                                rgb = self._resolve_theme_color(tc)
-                                stops.append(rgb if rgb else "?")
-                                theme_stops.append(tc)
-                            except Exception:
-                                stops.append("?")
-                                theme_stops.append(None)
-                except Exception:
-                    pass
-                return {
-                    "type": "gradient",
-                    "color": None,
-                    "gradient": stops,
-                    "theme_color": theme_stops if any(theme_stops) else None,
-                }
-            elif fill.type == MSO_FILL.PICTURE:
-                return {"type": "picture", "color": None, "gradient": None, "theme_color": None}
-            else:
-                return {"type": str(fill.type), "color": None, "gradient": None, "theme_color": None}
+                        stops.append("?")
+                        display_colors.append("?")
+                        theme_stops.append(None)
+        except Exception:
+            pass
+        return {
+            "type": "gradient",
+            "color": None,
+            "gradient": stops,
+            "theme_color": theme_stops if any(theme_stops) else None,
+            "display_color": display_colors,
+        }
+
+    def _parse_background_fill(self, element) -> dict:
+        """解析 BACKGROUND 类型填充（通过 XML 直接获取）"""
+        try:
+            xml_elem = element.element
+            bg_elem = xml_elem.find(".//p:bg", self._NSMAP)
+            if bg_elem is not None:
+                bg_ref = bg_elem.find(".//p:bgRef", self._NSMAP)
+                if bg_ref is not None:
+                    scheme_clr = bg_ref.find(".//a:schemeClr", self._NSMAP)
+                    if scheme_clr is not None:
+                        val = scheme_clr.get("val", "")
+                        if val:
+                            theme_name = {
+                                "bg1": "Light1", "bg2": "Light2",
+                                "tx1": "Dark1", "tx2": "Dark2",
+                                "accent1": "Accent1", "accent2": "Accent2",
+                                "accent3": "Accent3", "accent4": "Accent4",
+                                "accent5": "Accent5", "accent6": "Accent6",
+                            }.get(val)
+                            actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
+                            return {
+                                "type": "solid",
+                                "color": actual_rgb,
+                                "gradient": None,
+                                "theme_color": val.upper() if val else None,
+                                "display_color": actual_rgb,
+                            }
+
+                bg_fill = bg_elem.find(".//p:bgFill", self._NSMAP)
+                if bg_fill is not None:
+                    solid_fill = bg_fill.find(".//a:solidFill", self._NSMAP)
+                    if solid_fill is not None:
+                        rgb_elem = solid_fill.find(".//a:rgbClr", self._NSMAP)
+                        if rgb_elem is not None:
+                            rgb = rgb_elem.get("val", "").upper()
+                            return {"type": "solid", "color": rgb, "gradient": None, "theme_color": None, "display_color": rgb}
+                        scheme_clr = solid_fill.find(".//a:schemeClr", self._NSMAP)
+                        if scheme_clr is not None:
+                            val = scheme_clr.get("val", "")
+                            if val:
+                                theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                                actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
+                                return {"type": "solid", "color": actual_rgb, "gradient": None, "theme_color": val.upper() if val else None, "display_color": actual_rgb}
+
+                    gradient_fill = bg_fill.find(".//a:gradFill", self._NSMAP)
+                    if gradient_fill is not None:
+                        stops = []
+                        display_colors = []
+                        theme_stops = []
+                        for gs in gradient_fill.findall(".//a:gs", self._NSMAP):
+                            solid_fill_gs = gs.find(".//a:solidFill", self._NSMAP)
+                            if solid_fill_gs is not None:
+                                rgb_elem_gs = solid_fill_gs.find(".//a:rgbClr", self._NSMAP)
+                                if rgb_elem_gs is not None:
+                                    rgb = rgb_elem_gs.get("val", "").upper()
+                                    stops.append(rgb)
+                                    display_colors.append(rgb)
+                                else:
+                                    scheme_clr_gs = solid_fill_gs.find(".//a:schemeClr", self._NSMAP)
+                                    if scheme_clr_gs is not None:
+                                        val = scheme_clr_gs.get("val", "")
+                                        theme_name = {"lt1": "Light1", "lt2": "Light2", "dk1": "Dark1", "dk2": "Dark2", "accent1": "Accent1", "accent2": "Accent2", "accent3": "Accent3", "accent4": "Accent4", "accent5": "Accent5", "accent6": "Accent6", "bg1": "Light1", "bg2": "Light2", "tx1": "Dark1", "tx2": "Dark2"}.get(val)
+                                        actual_rgb = self._theme_colors.get(theme_name) if theme_name else None
+                                        stops.append(actual_rgb if actual_rgb else "?")
+                                        display_colors.append(actual_rgb if actual_rgb else "?")
+                                        theme_stops.append(val.upper() if val else None)
+                        return {"type": "gradient", "color": None, "gradient": stops, "theme_color": theme_stops if theme_stops else None, "display_color": display_colors}
+
+            return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
         except Exception as e:
-            return {"type": "error", "color": None, "gradient": None, "theme_color": None, "error": str(e)}
+            return {"type": "background", "color": None, "gradient": None, "theme_color": None, "display_color": None, "error": str(e)}
 
     def _resolve_theme_color(self, theme_color_str: str) -> str | None:
         """将主题颜色名解析为实际 RGB"""
@@ -218,6 +319,16 @@ class TemplateAnalyzer:
             "ACCENT_6": self._theme_colors.get("Accent6"),
             "HYPERLINK": self._theme_colors.get("Hyperlink"),
             "FOLLOWED_HYPERLINK": self._theme_colors.get("FollowedHyperlink"),
+            "LT1": self._theme_colors.get("Light1"),
+            "LT2": self._theme_colors.get("Light2"),
+            "DK1": self._theme_colors.get("Dark1"),
+            "DK2": self._theme_colors.get("Dark2"),
+            "ACCENT1": self._theme_colors.get("Accent1"),
+            "ACCENT2": self._theme_colors.get("Accent2"),
+            "ACCENT3": self._theme_colors.get("Accent3"),
+            "ACCENT4": self._theme_colors.get("Accent4"),
+            "ACCENT5": self._theme_colors.get("Accent5"),
+            "ACCENT6": self._theme_colors.get("Accent6"),
         }
         return mapping.get(theme_color_str)
 
@@ -240,12 +351,12 @@ class TemplateAnalyzer:
                 return {"major": None, "minor": None}
 
             theme_xml = etree.fromstring(theme_part.blob)
-            font_scheme = theme_xml.find(".//a:fontScheme", NSMAP)
+            font_scheme = theme_xml.find(".//a:fontScheme", self._NSMAP)
             if font_scheme is None:
                 return {"major": None, "minor": None}
 
-            major = font_scheme.find(".//a:majorFont/a:latin", NSMAP)
-            minor = font_scheme.find(".//a:minorFont/a:latin", NSMAP)
+            major = font_scheme.find(".//a:majorFont/a:latin", self._NSMAP)
+            minor = font_scheme.find(".//a:minorFont/a:latin", self._NSMAP)
 
             return {
                 "major": major.get("typeface") if major is not None else None,
@@ -359,3 +470,37 @@ class TemplateAnalyzer:
             )
         except Exception:
             return False
+
+    def _describe_background(self, bg: dict) -> str:
+        """生成背景描述文本，便于前端展示"""
+        bg_type = bg.get("type")
+        
+        if bg_type == "gradient":
+            gradient = bg.get("gradient", [])
+            if gradient and len(gradient) >= 2:
+                return f"渐变色 ({' → '.join(gradient[:2])})"
+            return "渐变背景"
+        
+        if bg_type == "solid":
+            color = bg.get("color")
+            theme_color = bg.get("theme_color")
+            if color:
+                if self._is_white(color):
+                    return f"白色背景 (#{color})"
+                elif self._is_light_green(color):
+                    return f"浅绿色背景 (#{color})"
+                elif self._is_dark_green(color):
+                    return f"深绿色背景 (#{color})"
+                else:
+                    return f"纯色背景 (#{color})"
+            elif theme_color:
+                return f"主题色背景 [{theme_color}]"
+            return "纯色背景"
+        
+        if bg_type == "picture":
+            return "图片背景"
+        
+        if bg_type == "inherit":
+            return "继承背景"
+        
+        return "未知背景"
