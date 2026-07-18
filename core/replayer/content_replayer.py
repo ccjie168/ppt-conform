@@ -20,14 +20,125 @@ class ContentReplayer:
         self.theme_fonts: dict = {}
         self.default_text_color: str | None = None
         self.title_text_color: str | None = None
+        self.template_width: int = 0
+        self.template_height: int = 0
+        self.footer_shapes: list[dict] = []
 
         if template_path and Path(template_path).exists():
             extractor = TemplateFormatExtractor()
             try:
                 self.template_formats = extractor.extract_placeholder_formats(template_path)
                 self.theme_fonts = extractor.extract_theme_fonts(template_path)
+                self._analyze_template_footer(template_path)
             except Exception:
                 pass
+
+    def _analyze_template_footer(self, template_path: str, master_index: int = 0) -> None:
+        """分析指定Master中的footer元素（图标、页脚文本等），用于复制到新slide"""
+        self.footer_shapes = []
+        try:
+            from pptx import Presentation
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+            prs = Presentation(template_path)
+            self.template_width = prs.slide_width
+            self.template_height = prs.slide_height
+
+            if not prs.slide_masters or master_index >= len(prs.slide_masters):
+                return
+
+            master = prs.slide_masters[master_index]
+            footer_threshold = self.template_height * 0.85
+
+            for shape in master.shapes:
+                try:
+                    is_footer = False
+                    shape_type = shape.shape_type
+
+                    # 底部区域的图片（施耐德图标等）
+                    if shape_type == MSO_SHAPE_TYPE.PICTURE:
+                        if shape.top and shape.top > footer_threshold:
+                            is_footer = True
+
+                    # 底部区域的文本框（页脚文本等）
+                    if shape_type == MSO_SHAPE_TYPE.TEXT_BOX:
+                        if shape.top and shape.top > footer_threshold:
+                            is_footer = True
+
+                    # 底部区域的占位符（页脚、页码等）
+                    if shape.is_placeholder:
+                        try:
+                            ph_type = int(shape.placeholder_format.type)
+                            # 13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE
+                            if ph_type in (13, 14, 15, 16) and shape.top and shape.top > footer_threshold:
+                                is_footer = True
+                        except Exception:
+                            pass
+
+                    if is_footer:
+                        right_margin = self.template_width - shape.left - shape.width
+                        bottom_margin = self.template_height - shape.top - shape.height
+
+                        shape_data = {
+                            "type": shape_type,
+                            "left": shape.left,
+                            "top": shape.top,
+                            "width": shape.width,
+                            "height": shape.height,
+                            "right_margin": right_margin,
+                            "bottom_margin": bottom_margin,
+                        }
+
+                        # 图片：保存图片二进制数据
+                        if shape_type == MSO_SHAPE_TYPE.PICTURE:
+                            try:
+                                shape_data["image_blob"] = shape.image.blob
+                                shape_data["image_ext"] = shape.image.ext
+                            except Exception:
+                                continue
+
+                        # 文本框：保存文本内容
+                        if shape_type == MSO_SHAPE_TYPE.TEXT_BOX:
+                            try:
+                                shape_data["text"] = shape.text_frame.text
+                                # 保存字体样式
+                                if shape.text_frame.paragraphs and shape.text_frame.paragraphs[0].runs:
+                                    run = shape.text_frame.paragraphs[0].runs[0]
+                                    shape_data["font_name"] = run.font.name
+                                    shape_data["font_size"] = run.font.size
+                                    shape_data["font_bold"] = run.font.bold
+                                    try:
+                                        if run.font.color and run.font.color.rgb:
+                                            shape_data["font_color"] = run.font.color.rgb
+                                    except (AttributeError, TypeError):
+                                        pass
+                            except Exception:
+                                shape_data["text"] = ""
+
+                        # 占位符（页脚、页码等）：保存文本内容和类型
+                        if shape.is_placeholder:
+                            try:
+                                shape_data["text"] = shape.text_frame.text
+                                shape_data["ph_type"] = int(shape.placeholder_format.type)
+                                # 保存字体样式
+                                if shape.text_frame.paragraphs and shape.text_frame.paragraphs[0].runs:
+                                    run = shape.text_frame.paragraphs[0].runs[0]
+                                    shape_data["font_name"] = run.font.name
+                                    shape_data["font_size"] = run.font.size
+                                    shape_data["font_bold"] = run.font.bold
+                                    try:
+                                        if run.font.color and run.font.color.rgb:
+                                            shape_data["font_color"] = run.font.color.rgb
+                                    except (AttributeError, TypeError):
+                                        pass
+                            except Exception:
+                                shape_data["text"] = ""
+
+                        self.footer_shapes.append(shape_data)
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     # 标准16:9尺寸 (13.333 x 7.5 英寸)
     WIDESCREEN_16_9 = Emu(12192000)
@@ -61,6 +172,7 @@ class ContentReplayer:
         selected_master = output_prs.slide_masters[selected_master_index]
 
         # 根据所选Master设置默认文字颜色（深色背景用白色文字，浅色背景用深色文字）
+        # 同时重新分析所选Master的footer元素
         if self.template_path and Path(self.template_path).exists():
             try:
                 extractor = TemplateFormatExtractor()
@@ -82,6 +194,8 @@ class ContentReplayer:
                 self.theme_fonts = extractor.extract_theme_fonts(
                     self.template_path, selected_master_index
                 )
+                # 重新分析所选Master的footer元素
+                self._analyze_template_footer(self.template_path, selected_master_index)
             except Exception:
                 pass
 
@@ -97,6 +211,7 @@ class ContentReplayer:
                 slide = output_prs.slides.add_slide(output_prs.slide_layouts[1])
 
             self._clear_placeholders(slide)
+            self._add_footer_shapes(slide)
             self._copy_slide_content(slide, model, slide_idx)
             self._check_and_fix_overflow(slide)
 
@@ -124,12 +239,8 @@ class ContentReplayer:
             sldIdLst.remove(child)
 
     def _clear_placeholders(self, slide) -> None:
-        """清空幻灯片上的内容占位符，保留页眉页脚和日期/页码占位符，以及页脚区域的图标"""
+        """清空幻灯片上的内容占位符，保留页眉页脚和日期/页码占位符"""
         header_footer_types = (13, 14, 15, 16)
-        try:
-            slide_height = slide.part.ppt.slide_height
-        except Exception:
-            slide_height = Emu(6858000)
 
         shapes_to_remove = []
         for shape in slide.shapes:
@@ -139,17 +250,8 @@ class ContentReplayer:
                     if phf.type not in header_footer_types:
                         shapes_to_remove.append(shape)
                 else:
-                    try:
-                        from pptx.enum.shapes import MSO_SHAPE_TYPE
-                        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                            top = shape.top
-                            if top and top > slide_height * 0.85:
-                                continue
-                            shapes_to_remove.append(shape)
-                        else:
-                            shapes_to_remove.append(shape)
-                    except Exception:
-                        shapes_to_remove.append(shape)
+                    # 非占位符形状都删掉（footer元素后面手动加）
+                    shapes_to_remove.append(shape)
             except Exception:
                 shapes_to_remove.append(shape)
 
@@ -159,6 +261,99 @@ class ContentReplayer:
                 spTree.remove(shape._element)
             except Exception:
                 pass
+
+    def _add_footer_shapes(self, slide) -> None:
+        """将footer元素（施耐德图标、页脚文本等）添加到slide上，并适配16:9位置"""
+        if not self.footer_shapes:
+            return
+
+        try:
+            target_width = slide.part.ppt.slide_width
+            target_height = slide.part.ppt.slide_height
+        except Exception:
+            target_width = Emu(12192000)
+            target_height = Emu(6858000)
+
+        # 判断是否需要适配（尺寸不同时按比例缩放位置）
+        needs_adapt = (self.template_width > 0 and self.template_height > 0 and
+                       (target_width != self.template_width or target_height != self.template_height))
+
+        for footer_info in self.footer_shapes:
+            try:
+                from pptx.enum.shapes import MSO_SHAPE_TYPE
+                from io import BytesIO
+
+                shape_type = footer_info["type"]
+                shape_w = footer_info["width"]
+                shape_h = footer_info["height"]
+                orig_right = footer_info["right_margin"]
+                orig_bottom = footer_info["bottom_margin"]
+
+                if needs_adapt:
+                    # 计算缩放比例
+                    scale_x = target_width / self.template_width
+                    scale_y = target_height / self.template_height
+                    # 保持右边距和下边距的比例
+                    new_right = orig_right * scale_x
+                    new_bottom = orig_bottom * scale_y
+                    new_w = shape_w * scale_x
+                    new_h = shape_h * scale_y
+                    new_left = target_width - new_w - new_right
+                    new_top = target_height - new_h - new_bottom
+                else:
+                    new_left = footer_info["left"]
+                    new_top = footer_info["top"]
+                    new_w = shape_w
+                    new_h = shape_h
+
+                # 确保位置合理
+                if new_left < 0:
+                    new_left = 0
+                if new_top < 0:
+                    new_top = 0
+
+                if shape_type == MSO_SHAPE_TYPE.PICTURE:
+                    # 添加图片
+                    image_blob = footer_info.get("image_blob")
+                    if image_blob:
+                        stream = BytesIO(image_blob)
+                        slide.shapes.add_picture(
+                            stream,
+                            left=int(new_left),
+                            top=int(new_top),
+                            width=int(new_w),
+                            height=int(new_h),
+                        )
+                else:
+                    # 文本框或占位符（页脚、页码等），都用文本框添加
+                    textbox = slide.shapes.add_textbox(
+                        int(new_left), int(new_top), int(new_w), int(new_h)
+                    )
+                    text = footer_info.get("text", "")
+                    if text:
+                        textbox.text_frame.text = text
+                        # 应用字体样式
+                        try:
+                            font_name = footer_info.get("font_name")
+                            font_size = footer_info.get("font_size")
+                            font_bold = footer_info.get("font_bold")
+                            font_color = footer_info.get("font_color")
+                            
+                            para = textbox.text_frame.paragraphs[0]
+                            if para.runs:
+                                run = para.runs[0]
+                                if font_name:
+                                    run.font.name = font_name
+                                if font_size:
+                                    run.font.size = font_size
+                                if font_bold is not None:
+                                    run.font.bold = font_bold
+                                if font_color:
+                                    run.font.color.rgb = font_color
+                        except Exception:
+                            pass
+            except Exception:
+                continue
 
     def _build_layout_map_from_master(self, master) -> dict:
         mapping = {}
