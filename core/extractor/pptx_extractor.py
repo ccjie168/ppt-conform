@@ -55,7 +55,7 @@ class PptxExtractor:
                 continue
 
             if shape.has_table:
-                table_data = self._extract_table(shape.table)
+                table_data = self._extract_table_full(shape.table)
                 if table_data:
                     body_blocks.append(ContentBlock(
                         type="table",
@@ -101,8 +101,6 @@ class PptxExtractor:
 
     def _extract_shape(self, shape, slide_index: int) -> dict | None:
         try:
-            if shape == slide_index:
-                pass
             shape_type = shape.shape_type
 
             if shape.has_text_frame:
@@ -118,7 +116,8 @@ class PptxExtractor:
             elif shape_type == MSO_SHAPE_TYPE.OLE_OBJECT:
                 return self._extract_ole_shape(shape)
             else:
-                return None
+                # 尝试提取自选图形的几何信息
+                return self._extract_auto_shape(shape)
         except Exception:
             return None
 
@@ -132,7 +131,20 @@ class PptxExtractor:
                 "level": paragraph.level or 0,
                 "alignment": str(paragraph.alignment) if paragraph.alignment else None,
                 "runs": [],
+                "line_spacing": None,
+                "space_before": None,
+                "space_after": None,
             }
+
+            try:
+                if paragraph.line_spacing is not None:
+                    para_data["line_spacing"] = paragraph.line_spacing
+                if paragraph.space_before is not None:
+                    para_data["space_before"] = paragraph.space_before
+                if paragraph.space_after is not None:
+                    para_data["space_after"] = paragraph.space_after
+            except Exception:
+                pass
 
             for run in paragraph.runs:
                 run_data = {
@@ -174,13 +186,17 @@ class PptxExtractor:
                 "height": shape.height,
                 "blob": image.blob,
                 "ext": image.ext,
+                "crop_left": getattr(shape, "crop_left", None),
+                "crop_top": getattr(shape, "crop_top", None),
+                "crop_right": getattr(shape, "crop_right", None),
+                "crop_bottom": getattr(shape, "crop_bottom", None),
             }
         except Exception:
             return None
 
     def _extract_table_shape(self, shape) -> dict:
         try:
-            table_data = self._extract_table(shape.table)
+            table_data = self._extract_table_full(shape.table)
             return {
                 "type": "table",
                 "left": shape.left,
@@ -191,6 +207,111 @@ class PptxExtractor:
             }
         except Exception:
             return None
+
+    def _extract_table_full(self, table) -> dict:
+        """完整提取表格：单元格文本、背景色、字体格式、合并单元格"""
+        cells = []
+        col_widths = []
+        row_heights = []
+
+        try:
+            for col_idx in range(len(table.columns)):
+                col_widths.append(table.columns[col_idx].width)
+        except Exception:
+            pass
+
+        try:
+            for row_idx in range(len(table.rows)):
+                row_heights.append(table.rows[row_idx].height)
+        except Exception:
+            pass
+
+        merged_cells = []
+        for r, row in enumerate(table.rows):
+            for c, cell in enumerate(row.cells):
+                cell_data = {
+                    "row": r,
+                    "col": c,
+                    "text": cell.text.strip(),
+                    "fill_color": None,
+                    "font_name": None,
+                    "font_size": None,
+                    "bold": None,
+                    "italic": None,
+                    "color": None,
+                    "alignment": None,
+                    "vertical_anchor": None,
+                    "margin_left": None,
+                    "margin_right": None,
+                    "margin_top": None,
+                    "margin_bottom": None,
+                }
+
+                try:
+                    fill = cell.fill
+                    if fill.type == 1:  # solid
+                        if fill.fore_color and fill.fore_color.rgb:
+                            cell_data["fill_color"] = str(fill.fore_color.rgb)
+                except Exception:
+                    pass
+
+                try:
+                    if cell.vertical_anchor is not None:
+                        cell_data["vertical_anchor"] = str(cell.vertical_anchor)
+                    cell_data["margin_left"] = cell.margin_left
+                    cell_data["margin_right"] = cell.margin_right
+                    cell_data["margin_top"] = cell.margin_top
+                    cell_data["margin_bottom"] = cell.margin_bottom
+                except Exception:
+                    pass
+
+                try:
+                    tf = cell.text_frame
+                    if tf.paragraphs:
+                        p = tf.paragraphs[0]
+                        if p.alignment is not None:
+                            cell_data["alignment"] = str(p.alignment)
+                        if p.runs:
+                            run = p.runs[0]
+                            font = run.font
+                            if font.name:
+                                cell_data["font_name"] = font.name
+                            if font.size:
+                                cell_data["font_size"] = font.size
+                            if font.bold is not None:
+                                cell_data["bold"] = font.bold
+                            if font.italic is not None:
+                                cell_data["italic"] = font.italic
+                            try:
+                                if font.color and font.color.rgb:
+                                    cell_data["color"] = str(font.color.rgb)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                # 检测合并单元格
+                try:
+                    if cell.span_h > 1 or cell.span_v > 1:
+                        merged_cells.append({
+                            "start_row": r,
+                            "start_col": c,
+                            "row_span": cell.span_v,
+                            "col_span": cell.span_h,
+                        })
+                except Exception:
+                    pass
+
+                cells.append(cell_data)
+
+        return {
+            "cells": cells,
+            "rows": len(table.rows),
+            "cols": len(table.columns),
+            "col_widths": col_widths,
+            "row_heights": row_heights,
+            "merged_cells": merged_cells,
+        }
 
     def _extract_group_shape(self, group, slide_index: int) -> dict:
         shapes_data = []
@@ -208,14 +329,36 @@ class PptxExtractor:
         }
 
     def _extract_chart_shape(self, shape) -> dict:
+        """完整提取图表：数据、类别、系列颜色、图例、坐标轴"""
         try:
             chart = shape.chart
             chart_data = []
             categories = []
-            
+            series_colors = []
+            chart_title = None
+            has_legend = False
+            legend_position = None
+
+            try:
+                if chart.has_title and chart.chart_title:
+                    chart_title = chart.chart_title.text_frame.text
+            except Exception:
+                pass
+
+            try:
+                if chart.has_legend:
+                    has_legend = True
+                    legend_position = str(chart.legend.position) if chart.legend else None
+            except Exception:
+                pass
+
             try:
                 for series in chart.series:
-                    series_data = {"name": series.name, "values": []}
+                    series_data = {
+                        "name": series.name,
+                        "values": [],
+                        "color": None,
+                    }
                     try:
                         values = series.values
                         if values:
@@ -226,6 +369,14 @@ class PptxExtractor:
                                 series_data["values"].append(point.value)
                             except Exception:
                                 series_data["values"].append(None)
+
+                    try:
+                        if series.format.fill.type == 1:
+                            if series.format.fill.fore_color and series.format.fill.fore_color.rgb:
+                                series_data["color"] = str(series.format.fill.fore_color.rgb)
+                    except Exception:
+                        pass
+
                     chart_data.append(series_data)
             except Exception:
                 pass
@@ -244,6 +395,32 @@ class PptxExtractor:
                 max_len = max(len(s.get("values", [])) for s in chart_data) if chart_data else 0
                 categories = [f"类别{i+1}" for i in range(max_len)]
 
+            # 提取坐标轴信息
+            x_axis = {}
+            y_axis = {}
+            try:
+                if chart.category_axis:
+                    ca = chart.category_axis
+                    x_axis = {
+                        "has_title": ca.has_title,
+                        "title": ca.axis_title.text_frame.text if ca.has_title and ca.axis_title else None,
+                        "visible": ca.visible,
+                    }
+            except Exception:
+                pass
+            try:
+                if chart.value_axis:
+                    va = chart.value_axis
+                    y_axis = {
+                        "has_title": va.has_title,
+                        "title": va.axis_title.text_frame.text if va.has_title and va.axis_title else None,
+                        "visible": va.visible,
+                        "minimum_scale": va.minimum_scale,
+                        "maximum_scale": va.maximum_scale,
+                    }
+            except Exception:
+                pass
+
             return {
                 "type": "chart",
                 "left": shape.left,
@@ -253,6 +430,11 @@ class PptxExtractor:
                 "chart_type": str(chart.chart_type),
                 "data": chart_data,
                 "categories": categories,
+                "chart_title": chart_title,
+                "has_legend": has_legend,
+                "legend_position": legend_position,
+                "x_axis": x_axis,
+                "y_axis": y_axis,
             }
         except Exception:
             return None
@@ -273,6 +455,25 @@ class PptxExtractor:
         except Exception:
             pass
         return None
+
+    def _extract_auto_shape(self, shape) -> dict | None:
+        """提取自选图形的几何信息"""
+        try:
+            shape_type = shape.shape_type
+            return {
+                "type": "autoshape",
+                "shape_type": str(shape_type),
+                "left": shape.left,
+                "top": shape.top,
+                "width": shape.width,
+                "height": shape.height,
+                "rotation": getattr(shape, "rotation", 0),
+                "fill_color": None,
+                "line_color": None,
+                "text": shape.text_frame.text if shape.has_text_frame else None,
+            }
+        except Exception:
+            return None
 
     def _extract_text_blocks(self, shape, slide_index: int) -> list[ContentBlock]:
         blocks = []
@@ -302,6 +503,7 @@ class PptxExtractor:
         return blocks
 
     def _extract_table(self, table) -> list[list[str]]:
+        """简化版表格提取（向后兼容）"""
         data = []
         for row in table.rows:
             row_data = []

@@ -1,5 +1,11 @@
 from core.models import ValidationReport, ValidationIssue
-from core.validator.rules import WatermarkTextRule, FontWhitelistRule, ContentOverflowRule
+from core.validator.rules import (
+    WatermarkTextRule,
+    FontWhitelistRule,
+    ContentOverflowRule,
+    TextOverflowRule,
+    SourceValidationRule,
+)
 
 
 class Validator:
@@ -8,6 +14,8 @@ class Validator:
             WatermarkTextRule(),
             FontWhitelistRule(),
             ContentOverflowRule(),
+            TextOverflowRule(),
+            SourceValidationRule(),
         ]
 
     def validate(self, pptx_path: str) -> ValidationReport:

@@ -2,6 +2,7 @@ import yaml
 import re
 from pathlib import Path
 from pptx import Presentation
+from pptx.util import Emu
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from core.models import ValidationIssue
 
@@ -129,6 +130,64 @@ class ContentOverflowRule(ValidationRule):
                             level=self.level,
                             rule_id=self.rule_id,
                             message=f"形状{shape_idx}底部溢出: bottom={(top+height)/914400:.1f}英寸",
+                            slide_index=slide_idx
+                        ))
+                except Exception:
+                    pass
+
+        return issues
+
+
+class TextOverflowRule(ValidationRule):
+    """文本溢出精确检测：估算文本行数是否超出文本框容量"""
+
+    def __init__(self):
+        super().__init__("R030", "文本容量检查", "warning", "文本内容可能超出文本框容量")
+
+    def check(self, pptx_path: str) -> list[ValidationIssue]:
+        issues = []
+        prs = Presentation(pptx_path)
+
+        for slide_idx, slide in enumerate(prs.slides):
+            for shape_idx, shape in enumerate(slide.shapes):
+                if not shape.has_text_frame:
+                    continue
+                try:
+                    tf = shape.text_frame
+                    if not tf.word_wrap:
+                        continue
+
+                    box_width = shape.width
+                    box_height = shape.height
+                    if box_width <= 0 or box_height <= 0:
+                        continue
+
+                    total_text_height = 0
+                    for para in tf.paragraphs:
+                        text = para.text
+                        if not text:
+                            total_text_height += Emu(914400 * 0.2)
+                            continue
+
+                        font_size = Emu(914400 * 0.18)  # 默认14pt
+                        for run in para.runs:
+                            if run.font.size:
+                                font_size = run.font.size
+                                break
+
+                        char_width = font_size * 0.6
+                        chars_per_line = max(1, int(box_width / char_width))
+                        num_lines = max(1, (len(text) + chars_per_line - 1) // chars_per_line)
+
+                        line_height = font_size * 1.2
+                        total_text_height += num_lines * line_height
+
+                    if total_text_height > box_height:
+                        ratio = total_text_height / box_height
+                        issues.append(ValidationIssue(
+                            level=self.level,
+                            rule_id=self.rule_id,
+                            message=f"形状{shape_idx}文本可能溢出: 预估高度={total_text_height/914400:.1f}英寸, 容器高度={box_height/914400:.1f}英寸 ({ratio:.0%})",
                             slide_index=slide_idx
                         ))
                 except Exception:
