@@ -2,6 +2,7 @@ import streamlit as st
 import tempfile
 import os
 import json
+import subprocess
 from pathlib import Path
 from pptx import Presentation
 
@@ -16,6 +17,44 @@ from core.analyzer import TemplateAnalyzer
 # 标准16:9宽屏比例（容差）
 WIDESCREEN_16_9_RATIO = 16 / 9
 ASPECT_RATIO_TOLERANCE = 0.02
+
+
+def _get_git_commit() -> str:
+    """获取当前 git commit 哈希（短格式）"""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(__file__),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _get_git_commit_date() -> str:
+    """获取当前 git commit 日期"""
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cd", "--date=format:%Y-%m-%d"],
+            cwd=os.path.dirname(__file__),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+APP_VERSION = _get_git_commit()
+APP_VERSION_DATE = _get_git_commit_date()
 
 
 def _check_template_aspect_ratio(template_file) -> tuple[bool, str, str]:
@@ -627,3 +666,8 @@ st.markdown("""
 - **失败阻断**: 校验失败时不输出任何文件，确保产物质量
 - **16:9 强制**: 模板输入仅支持 16:9 宽屏，4:3 模板会被拒绝并提示
 """)
+
+version_text = f"📌 版本: `{APP_VERSION}`"
+if APP_VERSION_DATE:
+    version_text += f" | 更新: {APP_VERSION_DATE}"
+st.markdown(f"<div style='text-align: right; color: #999; font-size: 12px;'>{version_text}</div>", unsafe_allow_html=True)
