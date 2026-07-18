@@ -582,13 +582,15 @@ class TemplateAnalyzer:
         bg_type = bg.get("type")
         color = bg.get("color")
         gradient = bg.get("gradient")
+        display_color = bg.get("display_color")
 
-        if bg_type == "gradient" and gradient and len(gradient) >= 2:
-            return {
-                "style_id": "F4",
-                "style_name": "渐变科技",
-                "confidence": "高",
-            }
+        if bg_type == "gradient" and gradient:
+            if len(gradient) >= 2 and any(g and g != "?" for g in gradient):
+                return {
+                    "style_id": "F4",
+                    "style_name": "渐变科技",
+                    "confidence": "高",
+                }
 
         if (bg_type == "solid" or bg_type == "theme") and color:
             color_lower = color.lower()
@@ -604,6 +606,22 @@ class TemplateAnalyzer:
                     "style_name": f"未匹配（颜色 #{color}）",
                     "confidence": "低",
                 }
+
+        if display_color:
+            if isinstance(display_color, list) and len(display_color) >= 2:
+                return {
+                    "style_id": "F4",
+                    "style_name": "渐变科技",
+                    "confidence": "高",
+                }
+            elif isinstance(display_color, str):
+                dc_lower = display_color.lower()
+                if self._is_white(dc_lower):
+                    return {"style_id": "F1", "style_name": "白色简约", "confidence": "高"}
+                elif self._is_light_green(dc_lower):
+                    return {"style_id": "F2", "style_name": "浅绿色清新", "confidence": "高"}
+                elif self._is_dark_green(dc_lower):
+                    return {"style_id": "F3", "style_name": "深绿色商务", "confidence": "高"}
 
         return {
             "style_id": "?",
@@ -638,8 +656,11 @@ class TemplateAnalyzer:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
             if g <= r or g <= b:
                 return False
+            green_diff = g - max(r, b)
+            if green_diff < 5:
+                return False
             brightness = (r + g + b) / 3
-            if brightness > 150:
+            if brightness > 180:
                 return False
             return True
         except Exception:
@@ -660,16 +681,19 @@ class TemplateAnalyzer:
     def _describe_background(self, bg: dict) -> str:
         """生成背景描述文本，便于前端展示"""
         bg_type = bg.get("type")
+        color = bg.get("color")
+        display_color = bg.get("display_color")
         
         if bg_type == "gradient":
             gradient = bg.get("gradient", [])
             if gradient and len(gradient) >= 2:
-                return f"渐变色 ({' → '.join(gradient[:2])})"
+                valid_colors = [g for g in gradient if g and g != "?"]
+                if valid_colors:
+                    return f"渐变色 ({' → '.join(valid_colors[:2])})"
+                return "渐变背景"
             return "渐变背景"
         
         if bg_type == "solid":
-            color = bg.get("color")
-            theme_color = bg.get("theme_color")
             if color:
                 if self._is_white(color):
                     return f"白色背景 (#{color})"
@@ -679,7 +703,17 @@ class TemplateAnalyzer:
                     return f"深绿色背景 (#{color})"
                 else:
                     return f"纯色背景 (#{color})"
-            elif theme_color:
+            elif display_color:
+                if isinstance(display_color, str):
+                    if self._is_white(display_color):
+                        return f"白色背景 (#{display_color})"
+                    elif self._is_light_green(display_color):
+                        return f"浅绿色背景 (#{display_color})"
+                    elif self._is_dark_green(display_color):
+                        return f"深绿色背景 (#{display_color})"
+                    return f"纯色背景 (#{display_color})"
+            theme_color = bg.get("theme_color")
+            if theme_color:
                 return f"主题色背景 [{theme_color}]"
             return "纯色背景"
         
@@ -688,5 +722,20 @@ class TemplateAnalyzer:
         
         if bg_type == "inherit":
             return "继承背景"
+        
+        if display_color:
+            if isinstance(display_color, list) and len(display_color) >= 2:
+                valid_colors = [d for d in display_color if d and d != "?"]
+                if valid_colors:
+                    return f"渐变色 ({' → '.join(valid_colors[:2])})"
+                return "渐变背景"
+            elif isinstance(display_color, str):
+                if self._is_white(display_color):
+                    return f"白色背景 (#{display_color})"
+                elif self._is_light_green(display_color):
+                    return f"浅绿色背景 (#{display_color})"
+                elif self._is_dark_green(display_color):
+                    return f"深绿色背景 (#{display_color})"
+                return f"纯色背景 (#{display_color})"
         
         return "未知背景"
