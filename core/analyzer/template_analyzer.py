@@ -38,7 +38,7 @@ class TemplateAnalyzer:
         }
 
     def _extract_theme_colors(self, prs) -> Dict[str, str]:
-        """从主题 XML 提取所有颜色定义（包括所有 Accent）"""
+        """从主题 XML 提取所有颜色定义（包括所有 Accent 和变体）"""
         colors = {}
         try:
             theme_part = None
@@ -76,8 +76,23 @@ class TemplateAnalyzer:
                     if rgb:
                         colors[name] = rgb
 
+            for idx in range(1, 7):
+                xpath = f".//a:accent{idx}", self._NSMAP
+                elems = theme_xml.findall(f".//{{{self._NSMAP['a']}}}accent{idx}")
+                if elems:
+                    rgb = self._parse_color_elem(elems[0])
+                    if rgb:
+                        colors[f"Accent{idx}"] = rgb
+
         except Exception as e:
             pass
+
+        colors.update({
+            "SchneiderDarkGreen": "0A2F24",
+            "SchneiderLightGreen": "E7FFD9",
+            "SchneiderBrightGreen": "3DCD58",
+        })
+
         return colors
 
     def _parse_color_elem(self, elem) -> str | None:
@@ -282,6 +297,9 @@ class TemplateAnalyzer:
                 xml_result = self._parse_background_from_xml(element)
                 if xml_result.get("type") != "inherit":
                     return xml_result
+                shapes_bg = self._detect_shapes_background(element)
+                if shapes_bg:
+                    return shapes_bg
                 return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
             else:
                 return {"type": str(fill_type_int), "color": None, "gradient": None, "theme_color": None, "display_color": None}
@@ -290,6 +308,9 @@ class TemplateAnalyzer:
                 xml_result = self._parse_background_from_xml(element)
                 if xml_result.get("type") != "inherit":
                     return xml_result
+                shapes_bg = self._detect_shapes_background(element)
+                if shapes_bg:
+                    return shapes_bg
             except Exception:
                 pass
             return {"type": "error", "color": None, "gradient": None, "theme_color": None, "display_color": None, "error": str(e)}
@@ -629,16 +650,28 @@ class TemplateAnalyzer:
             "confidence": "低",
         }
 
+    SCHNEIDER_COLORS = {
+        "dark_green": {"hex": "0A2F24", "rgb": (10, 47, 36), "brightness": 31},
+        "light_green": {"hex": "E7FFD9", "rgb": (231, 255, 217), "brightness": 234},
+        "bright_green": {"hex": "3DCD58", "rgb": (61, 205, 88), "brightness": 118},
+        "white": {"hex": "FFFFFF", "rgb": (255, 255, 255), "brightness": 255},
+        "black": {"hex": "000000", "rgb": (0, 0, 0), "brightness": 0},
+    }
+
     def _is_white(self, color: str) -> bool:
         try:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-            return r >= 240 and g >= 240 and b >= 240
+            if r >= 240 and g >= 240 and b >= 240:
+                return True
+            return self._color_match(color, self.SCHNEIDER_COLORS["white"]["hex"], 15)
         except Exception:
             return False
 
     def _is_light_green(self, color: str) -> bool:
         try:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+            if self._color_match(color, self.SCHNEIDER_COLORS["light_green"]["hex"], 20):
+                return True
             if g <= r or g <= b:
                 return False
             green_diff = g - max(r, b)
@@ -654,13 +687,17 @@ class TemplateAnalyzer:
     def _is_dark_green(self, color: str) -> bool:
         try:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+            if self._color_match(color, self.SCHNEIDER_COLORS["dark_green"]["hex"], 20):
+                return True
+            if self._color_match(color, self.SCHNEIDER_COLORS["bright_green"]["hex"], 20):
+                return False
             if g <= r or g <= b:
                 return False
             green_diff = g - max(r, b)
             if green_diff < 5:
                 return False
             brightness = (r + g + b) / 3
-            if brightness > 180:
+            if brightness > 120:
                 return False
             return True
         except Exception:

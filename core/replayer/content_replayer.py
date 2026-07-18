@@ -97,8 +97,9 @@ class ContentReplayer:
             sldIdLst.remove(child)
 
     def _clear_placeholders(self, slide) -> None:
-        """清空幻灯片上的内容占位符，保留页眉页脚和日期/页码占位符"""
+        """清空幻灯片上的内容占位符，保留页眉页脚和日期/页码占位符，以及页脚区域的图标"""
         header_footer_types = (13, 14, 15, 16)
+        slide_height = slide.slide.height
 
         shapes_to_remove = []
         for shape in slide.shapes:
@@ -107,8 +108,20 @@ class ContentReplayer:
                     phf = shape.placeholder_format
                     if phf.type not in header_footer_types:
                         shapes_to_remove.append(shape)
+                else:
+                    try:
+                        from pptx.enum.shapes import MSO_SHAPE_TYPE
+                        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                            top = shape.top
+                            if top and top > slide_height * 0.85:
+                                continue
+                            shapes_to_remove.append(shape)
+                        else:
+                            shapes_to_remove.append(shape)
+                    except Exception:
+                        shapes_to_remove.append(shape)
             except Exception:
-                continue
+                shapes_to_remove.append(shape)
 
         spTree = slide.shapes._spTree
         for shape in shapes_to_remove:
