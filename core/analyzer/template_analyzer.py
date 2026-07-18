@@ -188,7 +188,8 @@ class TemplateAnalyzer:
             try:
                 theme_color = color.theme_color
                 theme_color_str = str(theme_color)
-                actual_rgb = self._resolve_theme_color(theme_color_str)
+                clean_theme_color = self._clean_theme_color_name(theme_color_str)
+                actual_rgb = self._resolve_theme_color(clean_theme_color)
                 return {
                     "type": "solid",
                     "color": actual_rgb,
@@ -214,7 +215,8 @@ class TemplateAnalyzer:
                 except Exception:
                     try:
                         tc = str(stop.color.theme_color)
-                        rgb = self._resolve_theme_color(tc)
+                        clean_tc = self._clean_theme_color_name(tc)
+                        rgb = self._resolve_theme_color(clean_tc)
                         stops.append(rgb if rgb else "?")
                         display_colors.append(rgb if rgb else "?")
                         theme_stops.append(tc)
@@ -303,6 +305,14 @@ class TemplateAnalyzer:
             return {"type": "inherit", "color": None, "gradient": None, "theme_color": None, "display_color": None}
         except Exception as e:
             return {"type": "background", "color": None, "gradient": None, "theme_color": None, "display_color": None, "error": str(e)}
+
+    def _clean_theme_color_name(self, theme_color_str: str) -> str:
+        """清理主题颜色名称，去除变体索引如 'BACKGROUND_1 (14)' -> 'BACKGROUND_1'"""
+        if not theme_color_str:
+            return theme_color_str
+        import re
+        cleaned = re.sub(r'\s*\(\d+\)\s*$', '', theme_color_str)
+        return cleaned.strip()
 
     def _resolve_theme_color(self, theme_color_str: str) -> str | None:
         """将主题颜色名解析为实际 RGB"""
@@ -448,14 +458,27 @@ class TemplateAnalyzer:
     def _is_light_green(self, color: str) -> bool:
         try:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-            return g > r and g > b and r > 200 and g > 220
+            if g <= r or g <= b:
+                return False
+            green_diff = g - max(r, b)
+            if green_diff < 5:
+                return False
+            brightness = (r + g + b) / 3
+            if brightness < 180:
+                return False
+            return True
         except Exception:
             return False
 
     def _is_dark_green(self, color: str) -> bool:
         try:
             r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-            return g > r and g > b and r < 100 and g < 150 and b < 100
+            if g <= r or g <= b:
+                return False
+            brightness = (r + g + b) / 3
+            if brightness > 150:
+                return False
+            return True
         except Exception:
             return False
 
