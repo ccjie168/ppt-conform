@@ -485,13 +485,18 @@ with tab1:
 
                 st.info("🔍 步骤0: 源文件检查...")
                 validator = Validator()
-                source_report = validator.validate(input_path)
+                source_report = validator.validate_source(input_path)
                 source_fail = [i for i in source_report.issues if i.level == "fail"]
+                source_warn = [i for i in source_report.issues if i.level == "warning"]
                 if source_fail:
                     st.error("❌ 源文件检查失败")
                     for issue in source_fail:
                         st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
                 else:
+                    if source_warn:
+                        st.warning(f"⚠️ 源文件检查发现 {len(source_warn)} 项警告，将继续转换")
+                        for issue in source_warn[:5]:
+                            st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
                     try:
                         st.info("🔍 步骤1: 检测并去除水印...")
                         extractor = PptxExtractor()
