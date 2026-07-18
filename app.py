@@ -443,9 +443,17 @@ with tab1:
                     validator = Validator()
                     report = validator.validate(temp_output)
 
-                    if report.passed:
+                    fail_issues = [i for i in report.issues if i.level == "fail"]
+                    warn_issues = [i for i in report.issues if i.level == "warning"]
+
+                    if not fail_issues:
                         st.success(f"🎉 转换成功！共 {len(content_models)} 页")
                         st.info(f"校验结果: {report.summary}")
+
+                        if warn_issues:
+                            st.warning(f"⚠️ 发现 {len(warn_issues)} 项警告，建议检查")
+                            for issue in warn_issues[:5]:
+                                st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
 
                         with open(output_path, "rb") as f:
                             st.download_button(
