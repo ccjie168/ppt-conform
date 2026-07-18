@@ -213,6 +213,25 @@ class ContentReplayer:
         tf.word_wrap = True
         tf.clear()
 
+        # 应用文本框填充色和边框色
+        fill_color = shape_data.get("fill_color")
+        if fill_color:
+            try:
+                textbox.fill.solid()
+                textbox.fill.fore_color.rgb = RGBColor.from_string(fill_color)
+            except Exception:
+                pass
+
+        line_color = shape_data.get("line_color")
+        line_width = shape_data.get("line_width")
+        if line_color:
+            try:
+                textbox.line.color.rgb = RGBColor.from_string(line_color)
+                if line_width:
+                    textbox.line.width = line_width
+            except Exception:
+                pass
+
         # 获取模板格式规范
         template_fmt = self._get_template_format(is_title)
 
@@ -651,31 +670,61 @@ class ContentReplayer:
             pass
 
     def _add_auto_shape(self, slide, shape_data: dict) -> None:
-        """重放自选图形"""
+        """重放自选图形：保留填充色、边框色等样式"""
         try:
             from pptx.enum.shapes import MSO_SHAPE
             shape_type_str = shape_data.get("shape_type", "")
-            # 默认用矩形
             mso_shape = MSO_SHAPE.RECTANGLE
             try:
                 if "OVAL" in shape_type_str or "ELLIPSE" in shape_type_str:
                     mso_shape = MSO_SHAPE.OVAL
                 elif "ROUNDED_RECTANGLE" in shape_type_str:
                     mso_shape = MSO_SHAPE.ROUNDED_RECTANGLE
+                elif "LINE" in shape_type_str:
+                    mso_shape = MSO_SHAPE.LINE
+                elif "ARROW" in shape_type_str:
+                    mso_shape = MSO_SHAPE.RIGHT_ARROW
+                elif "DIAMOND" in shape_type_str:
+                    mso_shape = MSO_SHAPE.DIAMOND
+                elif "TRIANGLE" in shape_type_str:
+                    mso_shape = MSO_SHAPE.RIGHT_TRIANGLE
+                elif "STAR" in shape_type_str:
+                    mso_shape = MSO_SHAPE.FIVE_POINTED_STAR
             except Exception:
                 pass
 
+            left = self._adapt_position(shape_data.get("left", Emu(914400)), "x")
+            top = self._adapt_position(shape_data.get("top", Emu(914400)), "y")
+            width = self._adapt_position(shape_data.get("width", Emu(914400 * 4)), "x")
+            height = self._adapt_position(shape_data.get("height", Emu(914400 * 2)), "y")
+
             shape = slide.shapes.add_shape(
-                mso_shape,
-                shape_data.get("left", Emu(914400)),
-                shape_data.get("top", Emu(914400)),
-                shape_data.get("width", Emu(914400 * 4)),
-                shape_data.get("height", Emu(914400 * 2)),
+                mso_shape, left, top, width, height
             )
+
             try:
                 shape.rotation = shape_data.get("rotation", 0)
             except Exception:
                 pass
+
+            fill_color = shape_data.get("fill_color")
+            if fill_color:
+                try:
+                    shape.fill.solid()
+                    shape.fill.fore_color.rgb = RGBColor.from_string(fill_color)
+                except Exception:
+                    pass
+
+            line_color = shape_data.get("line_color")
+            line_width = shape_data.get("line_width")
+            if line_color:
+                try:
+                    shape.line.color.rgb = RGBColor.from_string(line_color)
+                    if line_width:
+                        shape.line.width = line_width
+                except Exception:
+                    pass
+
             if shape_data.get("text") and shape.has_text_frame:
                 shape.text_frame.text = shape_data["text"]
         except Exception:

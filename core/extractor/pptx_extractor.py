@@ -174,6 +174,26 @@ class PptxExtractor:
         if not paragraphs:
             return None
 
+        fill_color = None
+        try:
+            fill = shape.fill
+            if fill.type == 1:
+                if fill.fore_color and fill.fore_color.rgb:
+                    fill_color = str(fill.fore_color.rgb)
+        except Exception:
+            pass
+
+        line_color = None
+        line_width = None
+        try:
+            line = shape.line
+            if line.color and line.color.rgb:
+                line_color = str(line.color.rgb)
+            if line.width:
+                line_width = line.width
+        except Exception:
+            pass
+
         return {
             "type": "text",
             "left": shape.left,
@@ -182,6 +202,9 @@ class PptxExtractor:
             "height": shape.height,
             "paragraphs": paragraphs,
             "shape_name": shape.name,
+            "fill_color": fill_color,
+            "line_color": line_color,
+            "line_width": line_width,
         }
 
     def _extract_image_shape(self, shape) -> dict:
@@ -466,9 +489,37 @@ class PptxExtractor:
         return None
 
     def _extract_auto_shape(self, shape) -> dict | None:
-        """提取自选图形的几何信息"""
+        """提取自选图形的几何信息和样式"""
         try:
             shape_type = shape.shape_type
+
+            fill_color = None
+            try:
+                fill = shape.fill
+                if fill.type == 1:
+                    if fill.fore_color and fill.fore_color.rgb:
+                        fill_color = str(fill.fore_color.rgb)
+            except Exception:
+                pass
+
+            line_color = None
+            line_width = None
+            try:
+                line = shape.line
+                if line.color and line.color.rgb:
+                    line_color = str(line.color.rgb)
+                if line.width:
+                    line_width = line.width
+            except Exception:
+                pass
+
+            text = None
+            if shape.has_text_frame:
+                try:
+                    text = shape.text_frame.text
+                except Exception:
+                    pass
+
             return {
                 "type": "autoshape",
                 "shape_type": str(shape_type),
@@ -477,9 +528,10 @@ class PptxExtractor:
                 "width": shape.width,
                 "height": shape.height,
                 "rotation": getattr(shape, "rotation", 0),
-                "fill_color": None,
-                "line_color": None,
-                "text": shape.text_frame.text if shape.has_text_frame else None,
+                "fill_color": fill_color,
+                "line_color": line_color,
+                "line_width": line_width,
+                "text": text,
             }
         except Exception:
             return None
