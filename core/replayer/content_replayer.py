@@ -99,7 +99,10 @@ class ContentReplayer:
     def _clear_placeholders(self, slide) -> None:
         """清空幻灯片上的内容占位符，保留页眉页脚和日期/页码占位符，以及页脚区域的图标"""
         header_footer_types = (13, 14, 15, 16)
-        slide_height = slide.height
+        try:
+            slide_height = slide.part.ppt.slide_height
+        except Exception:
+            slide_height = Emu(6858000)
 
         shapes_to_remove = []
         for shape in slide.shapes:
