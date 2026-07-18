@@ -297,8 +297,6 @@ with tab1:
                             use_container_width=True,
                             type="primary" if is_selected else "secondary",
                         ):
-                            st.session_state["selected_master"] = option["index"]
-                            selected_master_index = option["index"]
                             _save_config({
                                 "template_name": st.session_state.get("_template_file", {}).get("name", ""),
                                 "selected_master": option["index"],
@@ -306,6 +304,7 @@ with tab1:
                                 "include_footer": st.session_state.get("include_footer", False),
                                 "include_icon": st.session_state.get("include_icon", False),
                             })
+                            st.session_state["selected_master"] = option["index"]
                     else:
                         is_selected = selected_master_index == option["index"]
                         card_style = "border: 2px solid #2196F3; background-color: #E3F2FD;" if is_selected else "border: 1px solid #e0e0e0; background-color: #f9f9f9;"
@@ -327,8 +326,6 @@ with tab1:
                             use_container_width=True,
                             type="primary" if is_selected else "secondary",
                         ):
-                            st.session_state["selected_master"] = option["index"]
-                            selected_master_index = option["index"]
                             _save_config({
                                 "template_name": st.session_state.get("_template_file", {}).get("name", ""),
                                 "selected_master": option["index"],
@@ -336,6 +333,7 @@ with tab1:
                                 "include_footer": st.session_state.get("include_footer", False),
                                 "include_icon": st.session_state.get("include_icon", False),
                             })
+                            st.session_state["selected_master"] = option["index"]
 
             st.markdown(f"**当前选择**: Master #{selected_master_index} - {master_options[selected_master_index]['style_name']}")
         else:
@@ -345,10 +343,6 @@ with tab1:
         include_header = st.checkbox("包含页眉", value=st.session_state.get("include_header", False), key="include_header")
         include_footer = st.checkbox("包含页脚", value=st.session_state.get("include_footer", False), key="include_footer")
         include_icon = st.checkbox("包含图标", value=st.session_state.get("include_icon", False), key="include_icon")
-
-        st.session_state["include_header"] = include_header
-        st.session_state["include_footer"] = include_footer
-        st.session_state["include_icon"] = include_icon
 
         _save_config({
             "template_name": st.session_state.get("_template_file", {}).get("name", ""),
