@@ -152,16 +152,30 @@ with tab2:
                     st.write(f"- **Layout 总数**: {result['total_layouts']}")
                     st.write(f"- **现有 Slide 数**: {result['total_slides']}")
 
+                    # 主题颜色
+                    if result.get("theme_colors"):
+                        st.markdown("### 🎨 主题颜色（从模板提取）")
+                        color_data = []
+                        for name, hex_color in result["theme_colors"].items():
+                            color_data.append({
+                                "颜色名称": name,
+                                "HEX 值": f"#{hex_color}",
+                                "预览": f"⬜",
+                            })
+                        st.table(color_data)
+
                     # 风格匹配结果
-                    st.markdown("### 🎨 风格匹配结果")
+                    st.markdown("### 🎯 风格匹配结果")
                     match_data = []
                     for m in result["style_matches"]:
                         bg = m["background"]
                         bg_str = f"{bg['type']}"
                         if bg.get("color"):
-                            bg_str += f" ({bg['color']})"
+                            bg_str += f" (#{bg['color']})"
                         elif bg.get("gradient"):
                             bg_str += f" ({' → '.join(bg['gradient'])})"
+                        if bg.get("theme_color"):
+                            bg_str += f" [主题: {bg['theme_color']}]"
                         match_data.append({
                             "Master 序号": m["master_index"],
                             "Master 名称": m["master_name"],
