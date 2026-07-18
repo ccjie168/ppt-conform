@@ -40,13 +40,12 @@ class ContentReplayer:
             slide = prs.slides.add_slide(slide_layouts[layout_index])
 
             if model.title:
-                try:
-                    if slide.shapes.title is not None:
-                        slide.shapes.title.text = model.title
-                except Exception:
-                    pass
+                self._fill_title(slide, model.title)
 
             self._fill_body(slide, model.body_blocks)
+
+            if model.notes:
+                self._fill_notes(slide, model.notes)
 
         prs.save(config.output_path)
         return config.output_path
@@ -96,28 +95,89 @@ class ContentReplayer:
             return 0
         return min(1, max(layout_map.values()) if layout_map else 0)
 
+    def _fill_title(self, slide, title_text: str) -> None:
+        """填充标题：优先使用 slide.shapes.title，其次查找标题占位符"""
+        try:
+            if slide.shapes.title is not None:
+                slide.shapes.title.text = title_text
+                return
+        except Exception:
+            pass
+
+        for shape in slide.placeholders:
+            try:
+                phf = shape.placeholder_format
+                if phf.type == 0 or "title" in (phf.name or "").lower():
+                    shape.text_frame.text = title_text
+                    return
+            except Exception:
+                continue
+
     def _fill_body(self, slide, body_blocks) -> None:
         """填充正文：文本进占位符，表格和图片新增到 slide"""
         if not body_blocks:
             return
 
-        # 分离文本块与其他类型
         text_blocks = [b for b in body_blocks if b.type == "paragraph" and b.text]
         other_blocks = [b for b in body_blocks if b.type in ("table", "image")]
 
-        # 1. 文本块填充到正文占位符
-        body_placeholder = None
+        if text_blocks:
+            body_placeholder = self._find_body_placeholder(slide)
+            if body_placeholder:
+                self._fill_text_into_placeholder(body_placeholder, text_blocks)
+            else:
+                self._add_text_as_new_shape(slide, text_blocks)
+
+        for block in other_blocks:
+            if block.type == "image":
+                self._add_image(slide, block.content)
+            elif block.type == "table":
+                self._add_table(slide, block.content)
+
+    def _find_body_placeholder(self, slide) -> object | None:
+        """查找正文占位符：尝试多种方式"""
         for shape in slide.placeholders:
             try:
-                if shape.placeholder_format.idx == 1:
-                    body_placeholder = shape
-                    break
+                phf = shape.placeholder_format
+                ph_type = phf.type
+
+                if ph_type == 2:
+                    return shape
+                if ph_type in (7, 8, 9, 10):
+                    return shape
+                if ph_type not in (0, 1, 3, 4):
+                    return shape
             except Exception:
                 continue
 
-        if body_placeholder and text_blocks:
-            tf = body_placeholder.text_frame
+        for shape in slide.placeholders:
+            try:
+                phf = shape.placeholder_format
+                ph_type = phf.type
+                if ph_type != 0 and ph_type != 1 and shape.has_text_frame:
+                    return shape
+            except Exception:
+                continue
+
+        for shape in slide.placeholders:
+            try:
+                if shape.has_text_frame:
+                    tf = shape.text_frame
+                    if len(tf.paragraphs) > 0:
+                        placeholder_text = tf.paragraphs[0].text
+                        if "click to edit" in placeholder_text.lower():
+                            return shape
+            except Exception:
+                continue
+
+        return None
+
+    def _fill_text_into_placeholder(self, placeholder, text_blocks) -> None:
+        """将文本块填充到占位符中，保留层级"""
+        try:
+            tf = placeholder.text_frame
             tf.clear()
+
             first = True
             for block in text_blocks:
                 if first:
@@ -127,13 +187,37 @@ class ContentReplayer:
                     p = tf.add_paragraph()
                 p.text = block.text
                 p.level = block.level
+        except Exception:
+            pass
 
-        # 2. 表格和图片直接添加到 slide
-        for block in other_blocks:
-            if block.type == "image":
-                self._add_image(slide, block.content)
-            elif block.type == "table":
-                self._add_table(slide, block.content)
+    def _add_text_as_new_shape(self, slide, text_blocks) -> None:
+        """当找不到正文占位符时，直接添加文本框"""
+        try:
+            left = Emu(914400)
+            top = Emu(914400 * 3)
+            width = Emu(914400 * 10)
+            height = Emu(914400 * 6)
+
+            textbox = slide.shapes.add_textbox(left, top, width, height)
+            tf = textbox.text_frame
+
+            for i, block in enumerate(text_blocks):
+                if i == 0:
+                    p = tf.paragraphs[0]
+                else:
+                    p = tf.add_paragraph()
+                p.text = block.text
+                p.level = block.level
+        except Exception:
+            pass
+
+    def _fill_notes(self, slide, notes_text: str) -> None:
+        """填充备注"""
+        try:
+            notes_slide = slide.notes_slide
+            notes_slide.notes_text_frame.text = notes_text
+        except Exception:
+            pass
 
     def _add_image(self, slide, content: dict) -> None:
         """将图片添加到 slide"""
