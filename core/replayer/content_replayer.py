@@ -27,12 +27,20 @@ class ContentReplayer:
             except Exception:
                 pass
 
+    # 标准16:9尺寸 (13.333 x 7.5 英寸)
+    WIDESCREEN_16_9 = Emu(12192000)
+    WIDESCREEN_16_9_H = Emu(6858000)
+
     def replay(self, content_models: list[SlideContentModel], config: UserConfig) -> str:
         if self.template_path and Path(self.template_path).exists():
             output_prs = Presentation(self.template_path)
             self._clear_slides(output_prs)
         else:
             output_prs = Presentation()
+
+        # 强制输出为16:9宽屏
+        output_prs.slide_width = self.WIDESCREEN_16_9
+        output_prs.slide_height = self.WIDESCREEN_16_9_H
 
         # 计算源和目标的尺寸比例，用于尺寸适配
         source_prs = Presentation(config.input_path)
