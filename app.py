@@ -492,7 +492,7 @@ with tab1:
                         st.error("❌ 源文件检查失败")
                         for issue in source_fail:
                             st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
-                        continue
+                        raise ValueError("源文件校验失败，已终止转换")
 
                     st.info("🔍 步骤1: 检测并去除水印...")
                     extractor = PptxExtractor()
