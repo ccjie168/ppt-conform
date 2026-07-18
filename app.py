@@ -428,6 +428,16 @@ with tab1:
                 )
 
                 try:
+                    st.info("🔍 步骤0: 源文件检查...")
+                    validator = Validator()
+                    source_report = validator.validate(input_path)
+                    source_fail = [i for i in source_report.issues if i.level == "fail"]
+                    if source_fail:
+                        st.error("❌ 源文件检查失败")
+                        for issue in source_fail:
+                            st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
+                        continue
+
                     st.info("🔍 步骤1: 检测并去除水印...")
                     extractor = PptxExtractor()
                     content_models = extractor.extract(input_path)
@@ -440,7 +450,6 @@ with tab1:
                     temp_output = replayer.replay(content_models, config)
 
                     st.info("✅ 步骤4: 质量校验...")
-                    validator = Validator()
                     report = validator.validate(temp_output)
 
                     fail_issues = [i for i in report.issues if i.level == "fail"]

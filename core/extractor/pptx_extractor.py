@@ -113,6 +113,10 @@ class PptxExtractor:
                 return self._extract_table_shape(shape)
             elif shape_type == MSO_SHAPE_TYPE.GROUP:
                 return self._extract_group_shape(shape, slide_index)
+            elif shape_type == MSO_SHAPE_TYPE.CHART:
+                return self._extract_chart_shape(shape)
+            elif shape_type == MSO_SHAPE_TYPE.OLE_OBJECT:
+                return self._extract_ole_shape(shape)
             else:
                 return None
         except Exception:
@@ -202,6 +206,73 @@ class PptxExtractor:
             "height": group.height,
             "shapes": shapes_data,
         }
+
+    def _extract_chart_shape(self, shape) -> dict:
+        try:
+            chart = shape.chart
+            chart_data = []
+            categories = []
+            
+            try:
+                for series in chart.series:
+                    series_data = {"name": series.name, "values": []}
+                    try:
+                        values = series.values
+                        if values:
+                            series_data["values"] = list(values)
+                    except Exception:
+                        for point in series.points:
+                            try:
+                                series_data["values"].append(point.value)
+                            except Exception:
+                                series_data["values"].append(None)
+                    chart_data.append(series_data)
+            except Exception:
+                pass
+
+            try:
+                if chart.plots and chart.plots[0].categories:
+                    for cat in chart.plots[0].categories:
+                        try:
+                            categories.append(str(cat))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            if not categories and chart_data:
+                max_len = max(len(s.get("values", [])) for s in chart_data) if chart_data else 0
+                categories = [f"类别{i+1}" for i in range(max_len)]
+
+            return {
+                "type": "chart",
+                "left": shape.left,
+                "top": shape.top,
+                "width": shape.width,
+                "height": shape.height,
+                "chart_type": str(chart.chart_type),
+                "data": chart_data,
+                "categories": categories,
+            }
+        except Exception:
+            return None
+
+    def _extract_ole_shape(self, shape) -> dict:
+        try:
+            ole_format = shape.ole_format
+            if ole_format and ole_format.binary:
+                return {
+                    "type": "ole",
+                    "left": shape.left,
+                    "top": shape.top,
+                    "width": shape.width,
+                    "height": shape.height,
+                    "prog_id": ole_format.prog_id,
+                    "blob": ole_format.binary,
+                }
+        except Exception:
+            pass
+        return None
 
     def _extract_text_blocks(self, shape, slide_index: int) -> list[ContentBlock]:
         blocks = []

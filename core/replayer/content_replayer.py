@@ -58,12 +58,16 @@ class ContentReplayer:
             sldIdLst.remove(child)
 
     def _clear_placeholders(self, slide) -> None:
-        """清空幻灯片上的占位符，只保留背景和页眉页脚"""
+        """清空幻灯片上的内容占位符，保留页眉页脚和日期/页码占位符"""
+        header_footer_types = (13, 14, 15, 16)
+        
         shapes_to_remove = []
         for shape in slide.shapes:
             try:
                 if shape.is_placeholder:
-                    shapes_to_remove.append(shape)
+                    phf = shape.placeholder_format
+                    if phf.type not in header_footer_types:
+                        shapes_to_remove.append(shape)
             except Exception:
                 continue
 
@@ -143,6 +147,10 @@ class ContentReplayer:
                 self._add_image_shape(slide, shape_data)
             elif shape_type == "table":
                 self._add_table_shape(slide, shape_data)
+            elif shape_type == "chart":
+                self._add_chart_shape(slide, shape_data)
+            elif shape_type == "ole":
+                self._add_ole_shape(slide, shape_data)
         except Exception:
             pass
 
@@ -225,6 +233,54 @@ class ContentReplayer:
             for c, cell_text in enumerate(row_data):
                 if c < cols:
                     table_shape.table.cell(r, c).text = cell_text
+
+    def _add_chart_shape(self, slide, shape_data: dict) -> None:
+        try:
+            chart_type = shape_data.get("chart_type", "")
+            chart_data = shape_data.get("data", [])
+            categories = shape_data.get("categories", [])
+            
+            from pptx.chart.data import CategoryChartData
+            from pptx.enum.chart import XL_CHART_TYPE
+            
+            if not chart_data or not categories:
+                return
+
+            chart_data_obj = CategoryChartData()
+            chart_data_obj.categories = categories
+            
+            for series in chart_data:
+                series_name = series.get("name", "Series")
+                values = series.get("values", [])
+                if values:
+                    chart_data_obj.add_series(series_name, values)
+
+            left = shape_data.get("left", Emu(914400))
+            top = shape_data.get("top", Emu(914400))
+            width = shape_data.get("width", Emu(914400 * 8))
+            height = shape_data.get("height", Emu(914400 * 4))
+
+            slide.shapes.add_chart(
+                XL_CHART_TYPE.COLUMN_CLUSTERED,
+                left, top, width, height,
+                chart_data_obj
+            )
+        except Exception:
+            pass
+
+    def _add_ole_shape(self, slide, shape_data: dict) -> None:
+        try:
+            blob = shape_data.get("blob")
+            if not blob:
+                return
+            stream = BytesIO(blob)
+            left = shape_data.get("left", Emu(914400))
+            top = shape_data.get("top", Emu(914400))
+            width = shape_data.get("width", Emu(914400 * 6))
+            height = shape_data.get("height", Emu(914400 * 4))
+            slide.shapes.add_ole_object(stream, left, top, width, height)
+        except Exception:
+            pass
 
     def _fill_title(self, slide, title_text: str) -> None:
         try:

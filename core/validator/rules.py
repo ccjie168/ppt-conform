@@ -2,6 +2,7 @@ import yaml
 import re
 from pathlib import Path
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from core.models import ValidationIssue
 
 
@@ -132,5 +133,53 @@ class ContentOverflowRule(ValidationRule):
                         ))
                 except Exception:
                     pass
+
+        return issues
+
+
+class SourceValidationRule(ValidationRule):
+    def __init__(self):
+        super().__init__("R050", "源文件检查", "warning", "检查源PPT文件的基本结构")
+
+    def check(self, pptx_path: str) -> list[ValidationIssue]:
+        issues = []
+        prs = Presentation(pptx_path)
+
+        if len(prs.slides) == 0:
+            issues.append(ValidationIssue(
+                level="fail",
+                rule_id=self.rule_id,
+                message="源文件没有任何幻灯片",
+                slide_index=-1
+            ))
+
+        if len(prs.slide_masters) == 0:
+            issues.append(ValidationIssue(
+                level="warning",
+                rule_id=self.rule_id,
+                message="源文件没有母版幻灯片",
+                slide_index=-1
+            ))
+
+        for slide_idx, slide in enumerate(prs.slides):
+            empty = True
+            for shape in slide.shapes:
+                if shape.has_text_frame and shape.text.strip():
+                    empty = False
+                    break
+                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                    empty = False
+                    break
+                if shape.has_table:
+                    empty = False
+                    break
+
+            if empty:
+                issues.append(ValidationIssue(
+                    level="warning",
+                    rule_id=self.rule_id,
+                    message=f"第{slide_idx}页为空幻灯片",
+                    slide_index=slide_idx
+                ))
 
         return issues
