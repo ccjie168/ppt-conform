@@ -47,8 +47,6 @@ def main(input_path: str, output_path: str, master: str, header: bool, footer: b
 
         # 2. 加载模板
         registry = TemplateRegistry()
-        registry.load_master_styles()
-        registry.load_layout_mappings()
         click.echo("2. 加载模板...")
 
         # 3. 重放内容

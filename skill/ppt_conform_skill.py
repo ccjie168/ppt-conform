@@ -22,8 +22,6 @@ def convert_ppt(input_path: str, output_path: str, master_style: str = "F1",
         content_models = extractor.extract(input_path)
 
         registry = TemplateRegistry()
-        registry.load_master_styles()
-        registry.load_layout_mappings()
 
         replayer = ContentReplayer(registry)
         temp_output = replayer.replay(content_models, config)

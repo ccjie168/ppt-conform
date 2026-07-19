@@ -352,7 +352,7 @@ class PptxExtractor:
                     continue
 
             para_data = {
-                "text": paragraph.text,
+                "text": self.watermark_detector.clean_text(paragraph.text),
                 "level": paragraph.level or 0,
                 "alignment": str(paragraph.alignment) if paragraph.alignment else None,
                 "runs": [],
@@ -372,8 +372,10 @@ class PptxExtractor:
                 pass
 
             for run in paragraph.runs:
+                # 清理水印关键词
+                run_text = self.watermark_detector.clean_text(run.text)
                 run_data = {
-                    "text": run.text,
+                    "text": run_text,
                     "font_name": run.font.name,
                     "font_size": run.font.size,
                     "bold": run.font.bold,
@@ -735,7 +737,7 @@ class PptxExtractor:
             text = None
             if shape.has_text_frame:
                 try:
-                    text = shape.text_frame.text
+                    text = self.watermark_detector.clean_text(shape.text_frame.text)
                 except Exception:
                     pass
 
@@ -782,12 +784,17 @@ class PptxExtractor:
             if watermark_report.detected:
                 continue
             
+            # 清理文本中的水印关键词（即使整个段落不是水印，也要移除其中的水印词）
+            cleaned_text = self.watermark_detector.clean_text(text)
+            if not cleaned_text.strip():
+                continue
+            
             # 提取段落格式（取第一个run的格式，含继承解析）
             text_format = self._extract_text_format(paragraph, source_shape or shape)
 
             blocks.append(ContentBlock(
                 type="paragraph",
-                text=text,
+                text=cleaned_text,
                 level=paragraph.level or 0,
                 semantic_role=semantic_role,
                 original_placeholder_type=ph_type,

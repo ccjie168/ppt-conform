@@ -3,7 +3,7 @@ from io import BytesIO
 from pptx import Presentation
 from pptx.util import Emu, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
 from pptx.oxml.ns import qn
 from core.models import SlideContentModel, UserConfig
 from core.registry.template_registry import TemplateRegistry
@@ -1032,11 +1032,63 @@ class ContentReplayer:
             except Exception:
                 pass
 
+        # 自动调整文本框大小以适应内容，避免文本溢出
+        self._auto_fit_textbox(textbox)
+
     def _get_template_format(self, is_title: bool) -> dict:
         """获取模板中标题或正文的格式规范"""
         if is_title:
             return self.template_formats.get("title", {})
         return self.template_formats.get("body", {})
+
+    def _auto_fit_textbox(self, textbox) -> None:
+        """自动调整文本框大小以适应内容，避免文本溢出
+        
+        策略：估算文本所需高度，如果超出当前容器高度，则扩大容器高度。
+        """
+        try:
+            tf = textbox.text_frame
+            if not tf.word_wrap:
+                return
+
+            box_width = textbox.width
+            box_height = textbox.height
+            if box_width <= 0 or box_height <= 0:
+                return
+
+            # 估算文本总高度
+            total_text_height = 0
+            for para in tf.paragraphs:
+                text = para.text
+                if not text:
+                    total_text_height += Emu(914400 * 0.2)
+                    continue
+
+                # 获取字号
+                font_size = Emu(914400 * 0.18)  # 默认14pt
+                for run in para.runs:
+                    if run.font.size:
+                        font_size = run.font.size
+                        break
+
+                # 估算行数和行高
+                char_width = font_size * 0.6
+                chars_per_line = max(1, int(box_width / char_width))
+                num_lines = max(1, (len(text) + chars_per_line - 1) // chars_per_line)
+                line_height = font_size * 1.2
+                total_text_height += num_lines * line_height
+
+            # 如果文本高度超出容器高度，扩大容器
+            if total_text_height > box_height:
+                # 增加10%的余量
+                new_height = int(total_text_height * 1.1)
+                # 不超过页面高度的限制
+                max_height = self.template_height * 0.8 if self.template_height else Emu(914400 * 7)
+                if new_height > max_height:
+                    new_height = max_height
+                textbox.height = new_height
+        except Exception:
+            pass
 
     def _apply_run_format(self, run, run_data: dict, template_fmt: dict | None = None, is_title: bool = False, original_format=None) -> None:
         """应用run格式：模板格式优先，原格式兜底
@@ -1677,6 +1729,8 @@ class ContentReplayer:
 
             if shape_data.get("text") and shape.has_text_frame:
                 shape.text_frame.text = shape_data["text"]
+                # 自动调整自选图形大小以适应文本
+                self._auto_fit_textbox(shape)
         except Exception:
             pass
 
@@ -1899,6 +1953,9 @@ class ContentReplayer:
                             pass
                 
                 p.level = para_data.get("level", 0)
+            
+            # 自动调整文本框大小以适应内容，避免文本溢出
+            self._auto_fit_textbox(textbox)
         except Exception:
             pass
 

@@ -70,6 +70,42 @@ class WatermarkDetector:
 
         return WatermarkReport(detected=False, elements=[], summary="No watermarks detected")
 
+    def clean_text(self, text: str) -> str:
+        """从文本中移除水印关键词，保留正文内容和合法标点
+        
+        用于处理包含水印词的长文本，只删除水印部分，保留正文。
+        仅清理因移除水印关键词而紧邻残留的孤立连接符（+、|），保留正文中的合法标点。
+        例如: "Dual-Track Sign-off: AI Generated + Human Reviewed"
+        →     "Dual-Track Sign-off: Human Reviewed"
+        """
+        if not text:
+            return text
+        
+        result = text
+        modified = False
+        # 按关键词长度从长到短排序，优先替换长的
+        for keyword in sorted(self.keywords, key=len, reverse=True):
+            if keyword in result:
+                # 移除关键词及其后紧邻的连接符（+、|）和空格
+                # 关键词前只移除空格，保留正文标点（如冒号）
+                # 关键词后移除空格和连接符
+                pattern = (
+                    r'\s*'  # 关键词前的空格（不匹配标点，保留正文冒号）
+                    + re.escape(keyword) +
+                    r'(?:\s*[:\+\|])?\s*'  # 关键词后的连接符和空格
+                )
+                new_result = re.sub(pattern, ' ', result)
+                if new_result != result:
+                    modified = True
+                    result = new_result
+        
+        if modified:
+            # 清理因移除而产生的多余空格
+            result = re.sub(r'\s{2,}', ' ', result)
+            result = result.strip()
+        
+        return result
+
     def detect_image_watermark(self, image_bytes: bytes) -> bool:
         try:
             from PIL import Image

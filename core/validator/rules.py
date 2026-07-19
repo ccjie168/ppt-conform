@@ -152,6 +152,10 @@ class TextOverflowRule(ValidationRule):
             for shape_idx, shape in enumerate(slide.shapes):
                 if not shape.has_text_frame:
                     continue
+                # 跳过空文本框
+                text = shape.text_frame.text.strip()
+                if not text:
+                    continue
                 try:
                     tf = shape.text_frame
                     if not tf.word_wrap:

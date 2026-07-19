@@ -26,6 +26,15 @@ font_whitelist:
   - "SimSun"
   - "Arial"
   - "Times New Roman"
+  - "Poppins"
+  - "Calibri"
+  - "Aptos"
+  - "+mj-lt"
+  - "+mj-ea"
+  - "+mj-cs"
+  - "+mn-lt"
+  - "+mn-ea"
+  - "+mn-cs"
 
 watermark_keywords:
   - "TRAE AI 生成"
