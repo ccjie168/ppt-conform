@@ -24,6 +24,8 @@ class ContentReplayer:
         self.template_height: int = 0
         self.footer_shapes: list[dict] = []
         self.background_image: dict | None = None
+        self.background_color: str | None = None
+        self.background_theme_color: str | None = None
 
         if template_path and Path(template_path).exists():
             extractor = TemplateFormatExtractor()
@@ -35,12 +37,15 @@ class ContentReplayer:
                 pass
 
     def _analyze_template_footer(self, template_path: str, master_index: int = 0) -> None:
-        """分析指定Master中的footer元素（图标、页脚文本等），用于复制到新slide"""
+        """分析指定Master中的footer元素（图标、页脚文本等）和背景信息，用于复制到新slide"""
         self.footer_shapes = []
         self.background_image = None
+        self.background_color = None
+        self.background_theme_color = None
         try:
             from pptx import Presentation
             from pptx.enum.shapes import MSO_SHAPE_TYPE
+            from lxml import etree
 
             prs = Presentation(template_path)
             self.template_width = prs.slide_width
@@ -51,6 +56,25 @@ class ContentReplayer:
 
             master = prs.slide_masters[master_index]
             footer_threshold = self.template_height * 0.85
+
+            nsmap = {
+                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+                'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
+            }
+
+            # 分析Master背景色
+            bg = master._element.find('.//p:bg', nsmap)
+            if bg is not None:
+                bgPr = bg.find('.//p:bgPr', nsmap)
+                if bgPr is not None:
+                    solidFill = bgPr.find('.//a:solidFill', nsmap)
+                    if solidFill is not None:
+                        schemeClr = solidFill.find('.//a:schemeClr', nsmap)
+                        if schemeClr is not None:
+                            self.background_theme_color = schemeClr.get("val")
+                        srgbClr = solidFill.find('.//a:srgbClr', nsmap)
+                        if srgbClr is not None:
+                            self.background_color = srgbClr.get("val")
 
             for shape in master.shapes:
                 try:
@@ -311,34 +335,66 @@ class ContentReplayer:
                 pass
 
     def _add_background_image(self, slide) -> None:
-        """将背景图添加到slide（最底层），并适配16:9尺寸"""
-        if not self.background_image:
-            return
+        """添加背景：优先使用背景图，否则使用纯色背景（与模板Master一致）"""
+        if self.background_image:
+            try:
+                from io import BytesIO
 
-        try:
-            from io import BytesIO
+                target_width = self.target_width
+                target_height = self.target_height
 
-            target_width = self.target_width
-            target_height = self.target_height
+                image_blob = self.background_image["image_blob"]
+                stream = BytesIO(image_blob)
 
-            image_blob = self.background_image["image_blob"]
-            stream = BytesIO(image_blob)
+                pic = slide.shapes.add_picture(
+                    stream,
+                    left=0,
+                    top=0,
+                    width=target_width,
+                    height=target_height,
+                )
 
-            # 添加背景图（铺满整个页面）
-            pic = slide.shapes.add_picture(
-                stream,
-                left=0,
-                top=0,
-                width=target_width,
-                height=target_height,
-            )
-
-            # 将背景图移到最底层
-            spTree = slide.shapes._spTree
-            spTree.remove(pic._element)
-            spTree.insert(2, pic._element)  # 索引0是nvGrpSpPr，1是grpSpPr，2开始是形状
-        except Exception:
-            pass
+                spTree = slide.shapes._spTree
+                spTree.remove(pic._element)
+                spTree.insert(2, pic._element)
+            except Exception:
+                pass
+        elif self.background_theme_color:
+            try:
+                from pptx.enum.dml import MSO_THEME_COLOR
+                theme_color_map = {
+                    'bg1': MSO_THEME_COLOR.BACKGROUND_1,
+                    'bg2': MSO_THEME_COLOR.BACKGROUND_2,
+                    'tx1': MSO_THEME_COLOR.TEXT_1,
+                    'tx2': MSO_THEME_COLOR.TEXT_2,
+                    'accent1': MSO_THEME_COLOR.ACCENT_1,
+                    'accent2': MSO_THEME_COLOR.ACCENT_2,
+                    'accent3': MSO_THEME_COLOR.ACCENT_3,
+                    'accent4': MSO_THEME_COLOR.ACCENT_4,
+                    'accent5': MSO_THEME_COLOR.ACCENT_5,
+                    'accent6': MSO_THEME_COLOR.ACCENT_6,
+                    'lt1': MSO_THEME_COLOR.LIGHT_1,
+                    'lt2': MSO_THEME_COLOR.LIGHT_2,
+                    'dk1': MSO_THEME_COLOR.DARK_1,
+                    'dk2': MSO_THEME_COLOR.DARK_2,
+                }
+                mso_color = theme_color_map.get(self.background_theme_color.lower())
+                if mso_color is not None:
+                    bg = slide.background
+                    fill = bg.fill
+                    fill.solid()
+                    fill.fore_color.theme_color = mso_color
+            except Exception:
+                pass
+        elif self.background_color:
+            try:
+                bg = slide.background
+                fill = bg.fill
+                fill.solid()
+                from pptx.dml.color import RGBColor
+                fill.fore_color.rgb = RGBColor.from_string(self.background_color)
+            except Exception:
+                pass
 
     def _add_footer_shapes(self, slide) -> None:
         """将footer元素（施耐德图标、页脚文本等）添加到slide上，并适配16:9位置"""
@@ -487,35 +543,43 @@ class ContentReplayer:
         
         # 4. 处理额外的自选图形（装饰性元素），样式用模板配色
         if model.raw_shapes:
-            # 收集已经被占位符处理的文本，避免重复
-            processed_texts = set()
-            if model.title:
-                processed_texts.add(model.title.strip())
+            # 收集所有已经被占位符处理的文本，避免重复
+            # 标题文本
+            title_text = (model.title or "").strip()
+            # 正文文本（合并所有paragraph block）
+            body_text = ""
             for block in model.body_blocks:
                 if block.type == "paragraph" and block.text:
-                    processed_texts.add(block.text.strip())
+                    body_text += block.text.strip() + "\n"
+            body_text = body_text.strip()
             
             for shape_data in model.raw_shapes:
                 shape_type = shape_data.get("type")
                 
-                # 跳过标题文本框（已经被填进标题占位符了）
-                if shape_type == "text" and model.title:
-                    shape_text = ""
-                    for para in shape_data.get("paragraphs", []):
-                        for run in para.get("runs", []):
-                            shape_text += run.get("text", "")
-                    if shape_text.strip() == model.title.strip():
-                        continue
-                
-                # 跳过正文文本框（已经被填进正文占位符了）
+                # 只处理文本类型的形状，检查是否重复
                 if shape_type == "text":
+                    # 收集形状中的所有文字
                     shape_text = ""
                     for para in shape_data.get("paragraphs", []):
                         for run in para.get("runs", []):
                             shape_text += run.get("text", "")
                     shape_text = shape_text.strip()
-                    if shape_text and shape_text in processed_texts:
+                    
+                    # 跳过标题文本框（和标题完全一致）
+                    if title_text and shape_text == title_text:
                         continue
+                    
+                    # 跳过正文文本框（正文包含该文本，或该文本包含正文）
+                    # 因为正文可能被拆分成多个paragraph，这里用归一化后比较
+                    if body_text and shape_text:
+                        # 归一化：去掉空白和换行后比较
+                        norm_shape = shape_text.replace(" ", "").replace("\n", "")
+                        norm_body = body_text.replace(" ", "").replace("\n", "")
+                        if norm_shape == norm_body:
+                            continue
+                        # 如果形状文本是正文的子集，也跳过
+                        if len(norm_shape) > 10 and norm_shape in norm_body:
+                            continue
                 
                 # 跳过图片/表格（已经在body_blocks中处理了）
                 if shape_type in ("image", "table"):
@@ -967,6 +1031,38 @@ class ContentReplayer:
                     cell_a.merge(cell_b)
             except Exception:
                 pass
+        
+        # Color Pairing：确保表格文字在背景上可见
+        try:
+            if self.default_text_color:
+                for r in range(rows):
+                    for c in range(cols):
+                        cell = table.cell(r, c)
+                        # 检查单元格是否有背景色
+                        cell_fill_color = None
+                        try:
+                            if cell.fill.type == 1:  # solid
+                                cell_fill_color = str(cell.fill.fore_color.rgb)
+                        except:
+                            pass
+                        
+                        # 决定文字颜色
+                        if cell_fill_color:
+                            # 有单元格背景色：根据单元格背景色调整
+                            text_color = self._get_text_color_for_bg(cell_fill_color)
+                        else:
+                            # 没有单元格背景色：用默认文字颜色
+                            text_color = self.default_text_color
+                        
+                        # 应用文字颜色
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                try:
+                                    run.font.color.rgb = RGBColor.from_string(text_color)
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
 
     def _add_table_simple(self, slide, shape_data: dict, data: list) -> None:
         """简化版表格重放（向后兼容）"""
@@ -981,10 +1077,26 @@ class ContentReplayer:
             shape_data.get("width", Emu(914400 * 8)),
             shape_data.get("height", Emu(914400 * 2)),
         )
+        table = table_shape.table
         for r, row_data in enumerate(data):
             for c, cell_text in enumerate(row_data):
                 if c < cols:
-                    table_shape.table.cell(r, c).text = str(cell_text)
+                    table.cell(r, c).text = str(cell_text)
+        
+        # Color Pairing：确保表格文字在背景上可见
+        try:
+            if self.default_text_color:
+                for r in range(rows):
+                    for c in range(cols):
+                        cell = table.cell(r, c)
+                        for para in cell.text_frame.paragraphs:
+                            for run in para.runs:
+                                try:
+                                    run.font.color.rgb = RGBColor.from_string(self.default_text_color)
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
 
     def _add_chart_shape(self, slide, shape_data: dict) -> None:
         """完整图表重放：保留图例、坐标轴、系列颜色"""
@@ -1327,6 +1439,13 @@ class ContentReplayer:
                 actual_bg_color = "FFFFFF" if self.default_text_color == "FFFFFF" else "3DCD58"
             elif fill_color:
                 actual_bg_color = fill_color
+            else:
+                # 没有填充色的文本框：用slide背景色作为参考
+                # 如果是深色背景，给文本框加浅色背景，确保文字可见
+                if self.default_text_color == "FFFFFF":
+                    textbox.fill.solid()
+                    textbox.fill.fore_color.rgb = RGBColor.from_string("E7FFD9")
+                    actual_bg_color = "E7FFD9"
             
             text_color_override = self._get_text_color_for_bg(actual_bg_color) if actual_bg_color else None
             
@@ -1430,6 +1549,16 @@ class ContentReplayer:
                         shape.line.color.rgb = RGBColor.from_string(line_color)
                     except Exception:
                         pass
+            else:
+                # 内容框没有填充色：根据整体背景色决定是否加背景
+                if self.default_text_color == "FFFFFF":
+                    # 深色背景下，给内容框加浅色背景，确保文字可见
+                    shape.fill.solid()
+                    shape.fill.fore_color.rgb = RGBColor.from_string("E7FFD9")
+                    actual_bg_color = "E7FFD9"
+                else:
+                    # 浅色背景下，内容框透明也没关系，文字是深色的
+                    actual_bg_color = None
             
             # 如果有文字，应用模板样式 + color pairing
             if shape_data.get("text") and shape.has_text_frame:
