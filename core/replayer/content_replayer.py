@@ -630,33 +630,50 @@ class ContentReplayer:
         return min(1, len(list(master.slide_layouts)) - 1) if master else 1
 
     def _copy_slide_content(self, slide, model: SlideContentModel, slide_idx: int) -> None:
-        """将内容回填到模板slide中，所有样式遵循模板
+        """将内容回填到模板slide中，模板格式优先，原格式兜底
         
-        核心原则：
-        1. 根据内容的 semantic_role 匹配模板占位符
-        2. 标题填入模板的title占位符（保留模板样式）
-        3. 主正文填入模板的body_main占位符（保留模板样式）
-        4. 侧边栏内容填入模板的body_sidebar占位符
-        5. 额外元素（图片、表格、装饰形状）按位置适配，样式用模板配色
+        核心原则（解决内容与格式割裂）：
+        1. 标题填入模板的title占位符（保留模板样式）
+        2. 副标题填入模板的subtitle占位符
+        3. 主正文填入模板的body占位符（如果有且只有一个主正文形状）
+        4. 其他内容作为额外形状按原位置回填，保留原PPT布局结构
+        5. 用 raw_shape_id 精确去重，避免内容重复处理
         """
+        # 已处理的 raw_shape_id 集合（用于精确去重）
+        processed_shape_ids = set()
+        
+        # 如果没有占位符标题，从 body_blocks 中找 semantic_role="title" 的 block 作为标题
+        title_text = model.title
+        title_format = model.title_format
+        if not title_text:
+            title_blocks = [b for b in model.body_blocks if b.semantic_role == "title" and b.text]
+            if title_blocks:
+                title_text = title_blocks[0].text
+                title_format = title_blocks[0].text_format
+                # 标记这些 block 对应的 raw_shape_id 已处理
+                for block in title_blocks:
+                    if block.raw_shape_id is not None:
+                        processed_shape_ids.add(block.raw_shape_id)
+        
         # 1. 填入标题（使用模板标题占位符的样式，原格式兜底）
-        if model.title:
+        if title_text:
             title_placeholder = self._find_placeholder_by_role(slide, "title")
-            # 获取原PPT中标题的格式信息
-            title_original_format = model.title_format if hasattr(model, 'title_format') else None
             if title_placeholder:
-                self._fill_title_into_placeholder(slide, model.title, title_placeholder, title_original_format)
+                self._fill_title_into_placeholder(slide, title_text, title_placeholder, title_format)
             else:
                 # 备用：使用 slide.shapes.title
-                self._fill_title_into_placeholder(slide, model.title, None, title_original_format)
+                self._fill_title_into_placeholder(slide, title_text, None, title_format)
         
-        # 2. 根据语义角色分组正文内容
+        # 2. 根据语义角色分组正文内容（排除已作为标题处理的 block）
         body_main_blocks = []
         body_sidebar_blocks = []
         subtitle_blocks = []
         other_blocks = []
         
         for block in model.body_blocks:
+            # 跳过已作为标题处理的 block
+            if block.semantic_role == "title" and not model.title and title_text:
+                continue
             if block.type == "paragraph" and block.text:
                 if block.semantic_role == "subtitle":
                     subtitle_blocks.append(block)
@@ -674,85 +691,62 @@ class ContentReplayer:
             subtitle_placeholder = self._find_placeholder_by_role(slide, "subtitle")
             if subtitle_placeholder:
                 self._fill_body_into_placeholder(slide, subtitle_blocks, subtitle_placeholder)
+                # 标记这些 block 对应的 raw_shape_id 已处理
+                for block in subtitle_blocks:
+                    if block.raw_shape_id is not None:
+                        processed_shape_ids.add(block.raw_shape_id)
         
         # 4. 填入主正文（使用模板正文占位符的样式）
-        if body_main_blocks:
+        # 判断是否应该用占位符填入：只有当主正文来自同一个 shape 时才用占位符
+        # 如果主正文来自多个不同 shape，说明原PPT有多个文本框，应该按原位置回填
+        main_block_shape_ids = set()
+        for block in body_main_blocks:
+            if block.raw_shape_id is not None:
+                main_block_shape_ids.add(block.raw_shape_id)
+        
+        # 如果主正文来自同一个 shape（或没有 shape_id），填入占位符
+        # 如果来自多个 shape，则全部按原位置回填，保留原PPT布局
+        if body_main_blocks and len(main_block_shape_ids) <= 1:
             body_placeholder = self._find_placeholder_by_role(slide, "body_main")
             if body_placeholder:
                 self._fill_body_into_placeholder(slide, body_main_blocks, body_placeholder)
-            else:
-                # 备用：使用原来的查找逻辑
-                self._fill_body_into_placeholder(slide, body_main_blocks)
+                # 标记已处理
+                for block in body_main_blocks:
+                    if block.raw_shape_id is not None:
+                        processed_shape_ids.add(block.raw_shape_id)
         
         # 5. 填入侧边栏内容（如果有对应的占位符）
         if body_sidebar_blocks:
             sidebar_placeholder = self._find_placeholder_by_role(slide, "body_sidebar")
             if sidebar_placeholder:
                 self._fill_body_into_placeholder(slide, body_sidebar_blocks, sidebar_placeholder)
-            else:
-                # 没有侧边栏占位符，合并到主正文
-                if body_main_blocks:
-                    # 主正文已有内容，侧边栏内容作为额外文本框
-                    for block in body_sidebar_blocks:
-                        self._add_extra_text_shape(slide, {
-                            "type": "text",
-                            "left": Emu(914400 * 7),
-                            "top": Emu(914400 * 3),
-                            "width": Emu(914400 * 4),
-                            "height": Emu(914400 * 4),
-                            "paragraphs": [{"text": block.text, "level": block.level, "runs": [{"text": block.text}]}],
-                            "shape_name": "Sidebar Text",
-                            "fill_color": None,
-                            "line_color": None,
-                            "line_width": None,
-                        })
-                else:
-                    # 主正文没有内容，侧边栏内容填入主正文占位符
-                    body_placeholder = self._find_placeholder_by_role(slide, "body_main")
-                    if body_placeholder:
-                        self._fill_body_into_placeholder(slide, body_sidebar_blocks, body_placeholder)
+                for block in body_sidebar_blocks:
+                    if block.raw_shape_id is not None:
+                        processed_shape_ids.add(block.raw_shape_id)
+            # 如果没有侧边栏占位符，不合并到主正文，而是按原位置回填（保留布局）
         
         # 6. 处理额外元素（图片、表格等），位置按比例适配，样式用模板配色
         for block in other_blocks:
             if block.type == "image":
                 self._add_image_from_block(slide, block.content)
+                if block.raw_shape_id is not None:
+                    processed_shape_ids.add(block.raw_shape_id)
             elif block.type == "table":
                 self._add_table_from_block(slide, block.content)
+                if block.raw_shape_id is not None:
+                    processed_shape_ids.add(block.raw_shape_id)
         
-        # 7. 处理额外的自选图形（装饰性元素），样式用模板配色
+        # 7. 处理额外的自选图形和文本框（装饰性元素、未被占位符处理的内容）
+        # 用 raw_shape_id 精确去重，避免内容重复处理
         if model.raw_shapes:
-            # 收集所有已经被占位符处理的文本，避免重复
-            title_text = (model.title or "").strip()
-            body_text = ""
-            for block in body_main_blocks + body_sidebar_blocks + subtitle_blocks:
-                if block.text:
-                    body_text += block.text.strip() + "\n"
-            body_text = body_text.strip()
-            
             for shape_data in model.raw_shapes:
-                shape_type = shape_data.get("type")
+                shape_id = shape_data.get("shape_id")
                 
-                # 只处理文本类型的形状，检查是否重复
-                if shape_type == "text":
-                    # 收集形状中的所有文字
-                    shape_text = ""
-                    for para in shape_data.get("paragraphs", []):
-                        for run in para.get("runs", []):
-                            shape_text += run.get("text", "")
-                    shape_text = shape_text.strip()
-                    
-                    # 跳过标题文本框（和标题完全一致）
-                    if title_text and shape_text == title_text:
-                        continue
-                    
-                    # 跳过正文文本框（正文包含该文本，或该文本包含正文）
-                    if body_text and shape_text:
-                        norm_shape = shape_text.replace(" ", "").replace("\n", "")
-                        norm_body = body_text.replace(" ", "").replace("\n", "")
-                        if norm_shape == norm_body:
-                            continue
-                        if len(norm_shape) > 10 and norm_shape in norm_body:
-                            continue
+                # 精确去重：跳过已处理的 shape
+                if shape_id is not None and shape_id in processed_shape_ids:
+                    continue
+                
+                shape_type = shape_data.get("type")
                 
                 # 跳过图片/表格（已经在body_blocks中处理了）
                 if shape_type in ("image", "table"):
@@ -832,8 +826,37 @@ class ContentReplayer:
                     return slide.shapes.title
             except Exception:
                 pass
-        elif role in ("body_main", "body_sidebar"):
-            # 找最大的文本/内容占位符
+        elif role == "body_main":
+            # 找最大的文本/内容占位符（优先左半部分）
+            best_placeholder = None
+            best_area = 0
+            slide_width = self.target_width or Emu(12192000)
+            for shape in slide.placeholders:
+                try:
+                    phf = shape.placeholder_format
+                    # 跳过页眉页脚
+                    if phf.type in (13, 14, 15, 16):
+                        continue
+                    # 跳过标题
+                    if phf.type in (1, 3):
+                        continue
+                    # 只考虑有文本框的占位符
+                    if shape.has_text_frame:
+                        area = (shape.width or 0) * (shape.height or 0)
+                        # 主正文优先左半部分
+                        left = shape.left or 0
+                        if left < slide_width * 0.5:
+                            area *= 1.5  # 左半部分加权
+                        if area > best_area:
+                            best_area = area
+                            best_placeholder = shape
+                except Exception:
+                    continue
+            if best_placeholder:
+                return best_placeholder
+        elif role == "body_sidebar":
+            # 侧边栏：优先找右半部分的占位符
+            slide_width = self.target_width or Emu(12192000)
             best_placeholder = None
             best_area = 0
             for shape in slide.placeholders:
@@ -847,10 +870,13 @@ class ContentReplayer:
                         continue
                     # 只考虑有文本框的占位符
                     if shape.has_text_frame:
-                        area = (shape.width or 0) * (shape.height or 0)
-                        if area > best_area:
-                            best_area = area
-                            best_placeholder = shape
+                        left = shape.left or 0
+                        # 侧边栏优先右半部分
+                        if left >= slide_width * 0.5:
+                            area = (shape.width or 0) * (shape.height or 0)
+                            if area > best_area:
+                                best_area = area
+                                best_placeholder = shape
                 except Exception:
                     continue
             if best_placeholder:

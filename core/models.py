@@ -63,6 +63,8 @@ class ContentBlock(BaseModel):
     original_placeholder_type: int | None = None
     original_placeholder_idx: int | None = None
     source_shape_id: int | None = None
+    # 新增：与raw_shapes中对应形状的shape_id（用于精确去重）
+    raw_shape_id: int | None = None
     # 新增：格式信息
     text_format: TextFormat | None = None
     shape_format: ShapeFormat | None = None

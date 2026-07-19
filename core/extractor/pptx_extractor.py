@@ -1,7 +1,8 @@
 from pathlib import Path
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from core.models import SlideContentModel, ContentBlock, WatermarkReport
+from pptx.util import Pt
+from core.models import SlideContentModel, ContentBlock, WatermarkReport, TextFormat, ShapeFormat
 from core.watermark.detector import WatermarkDetector
 
 
@@ -27,9 +28,14 @@ class PptxExtractor:
     def _extract_slide(self, slide, slide_index: int) -> SlideContentModel:
         title = None
         title_source = {}
+        title_format = None
         body_blocks = []
         notes_text = None
         raw_shapes = []
+        # shape_id 映射表：id(shape) → raw_shapes 中的 shape_id
+        # 用于建立 ContentBlock 与 raw_shape 的精确映射
+        shape_id_map = {}
+        next_shape_id = 0
         layout_features = {
             "has_title": False,
             "has_subtitle": False,
@@ -119,8 +125,15 @@ class PptxExtractor:
             if _is_header_or_footer(shape):
                 continue
 
+            # 为每个形状分配唯一的 shape_id
+            current_shape_id = next_shape_id
+            next_shape_id += 1
+            shape_id_map[id(shape)] = current_shape_id
+
             shape_data = self._extract_shape(shape, slide_index)
             if shape_data:
+                # 在 shape_data 中记录 shape_id
+                shape_data["shape_id"] = current_shape_id
                 raw_shapes.append(shape_data)
 
             # 统计占位符
@@ -135,6 +148,9 @@ class PptxExtractor:
                     pass
 
             if shape == slide.shapes.title:
+                # 标题已提取为 model.title，从 raw_shapes 中移除，避免回填时重复
+                if raw_shapes and raw_shapes[-1].get("shape_id") == current_shape_id:
+                    raw_shapes.pop()
                 title_text = self._get_shape_text(shape)
                 if title_text:
                     watermark_report = self.watermark_detector.detect_text(title_text, slide_index)
@@ -153,7 +169,7 @@ class PptxExtractor:
                             }
                         except Exception:
                             title_source = {}
-                        # 提取标题格式信息
+                        # 提取标题格式信息（含继承解析）
                         title_format = self._extract_title_format(shape)
                 continue
 
@@ -174,6 +190,9 @@ class PptxExtractor:
                     layout_features["has_subtitle"] = True
                 
                 blocks = self._extract_text_blocks(shape, slide_index, semantic_role, shape)
+                # 为每个 block 关联 raw_shape_id
+                for block in blocks:
+                    block.raw_shape_id = current_shape_id
                 body_blocks.extend(blocks)
                 continue
 
@@ -188,6 +207,7 @@ class PptxExtractor:
                         level=0,
                         semantic_role="body_main",
                         source_shape_id=id(shape),
+                        raw_shape_id=current_shape_id,
                     ))
                 continue
 
@@ -209,6 +229,7 @@ class PptxExtractor:
                         level=0,
                         semantic_role="body_main",
                         source_shape_id=id(shape),
+                        raw_shape_id=current_shape_id,
                     ))
                 except Exception:
                     pass
@@ -216,6 +237,9 @@ class PptxExtractor:
 
             if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
                 blocks = self._extract_group(shape, slide_index)
+                # 为 group 中的 block 也关联 raw_shape_id
+                for block in blocks:
+                    block.raw_shape_id = current_shape_id
                 body_blocks.extend(blocks)
                 continue
 
@@ -726,8 +750,8 @@ class PptxExtractor:
             if watermark_report.detected:
                 continue
             
-            # 提取段落格式（取第一个run的格式）
-            text_format = self._extract_text_format(paragraph)
+            # 提取段落格式（取第一个run的格式，含继承解析）
+            text_format = self._extract_text_format(paragraph, source_shape or shape)
 
             blocks.append(ContentBlock(
                 type="paragraph",
@@ -743,19 +767,24 @@ class PptxExtractor:
         return blocks
 
     def _extract_title_format(self, shape) -> TextFormat | None:
-        """从标题形状中提取文本格式信息"""
+        """从标题形状中提取文本格式信息（含继承解析）"""
         try:
             if not shape.has_text_frame:
                 return None
             tf = shape.text_frame
             if not tf.paragraphs:
                 return None
-            return self._extract_text_format(tf.paragraphs[0])
+            return self._extract_text_format(tf.paragraphs[0], shape)
         except Exception:
             return None
 
-    def _extract_text_format(self, paragraph) -> TextFormat | None:
-        """从段落中提取文本格式信息"""
+    def _extract_text_format(self, paragraph, shape=None) -> TextFormat | None:
+        """从段落中提取文本格式信息（含继承解析）
+        
+        python-pptx 的格式有继承机制（主题 → 布局 → 占位符 → run），
+        run.font.size 为 None 时实际继承自上层。
+        本方法递归解析继承值，获取实际渲染值。
+        """
         try:
             text_format = TextFormat()
             
@@ -764,18 +793,72 @@ class PptxExtractor:
                 run = paragraph.runs[0]
                 font = run.font
                 
+                # 字体名称：run级别 → 占位符级别
                 if font.name:
                     text_format.font_name = font.name
+                elif shape:
+                    # 尝试从占位符继承
+                    try:
+                        if shape.is_placeholder and shape.text_frame.paragraphs:
+                            for p in shape.text_frame.paragraphs:
+                                if p.runs:
+                                    inherited_name = p.runs[0].font.name
+                                    if inherited_name:
+                                        text_format.font_name = inherited_name
+                                        break
+                    except Exception:
+                        pass
+                
+                # 字号：run级别 → 段落默认 → 占位符级别
                 if font.size:
                     text_format.font_size = font.size.pt
+                elif shape:
+                    # 尝试从占位符的其他段落继承
+                    try:
+                        if shape.is_placeholder and shape.text_frame.paragraphs:
+                            for p in shape.text_frame.paragraphs:
+                                if p.runs and p.runs[0].font.size:
+                                    text_format.font_size = p.runs[0].font.size.pt
+                                    break
+                    except Exception:
+                        pass
+                
+                # 粗体
                 if font.bold is not None:
                     text_format.bold = font.bold
+                
+                # 斜体
                 if font.italic is not None:
                     text_format.italic = font.italic
+                
+                # 下划线
                 if font.underline is not None:
                     text_format.underline = font.underline
+                
+                # 颜色：run级别 → 主题颜色
                 if font.color and font.color.rgb:
                     text_format.font_color = str(font.color.rgb)
+                elif font.color and font.color.type is not None:
+                    # 尝试获取主题颜色
+                    try:
+                        if font.color.theme_color:
+                            # 主题颜色映射到近似RGB值
+                            theme_color_map = {
+                                'tx1': '000000', 'dk1': '000000',
+                                'tx2': '44546A', 'dk2': '44546A',
+                                'bg1': 'FFFFFF', 'lt1': 'FFFFFF',
+                                'bg2': 'E7E6E6', 'lt2': 'E7E6E6',
+                                'accent1': '4472C4', 'accent2': 'ED7D31',
+                                'accent3': 'A5A5A5', 'accent4': 'FFC000',
+                                'accent5': '5B9BD5', 'accent6': '70AD47',
+                            }
+                            tc_str = str(font.color.theme_color)
+                            for key, val in theme_color_map.items():
+                                if key in tc_str:
+                                    text_format.font_color = val
+                                    break
+                    except Exception:
+                        pass
             
             # 段落对齐
             if paragraph.alignment is not None:
@@ -783,8 +866,8 @@ class PptxExtractor:
             
             # 行距
             try:
-                if paragraph.space_before is not None:
-                    text_format.line_spacing = paragraph.space_before.pt
+                if paragraph.line_spacing is not None:
+                    text_format.line_spacing = float(paragraph.line_spacing)
             except Exception:
                 pass
             
