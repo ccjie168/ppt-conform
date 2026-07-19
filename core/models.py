@@ -34,10 +34,15 @@ class ContentBlock(BaseModel):
 class SlideContentModel(BaseModel):
     slide_index: int
     title: str | None
+    subtitle: str | None = None
     body_blocks: list[ContentBlock]
     notes: str | None = None
     original_layout_type: str | None = None
     raw_shapes: list[dict] = []
+    extra_images: list[dict] = []
+    extra_tables: list[dict] = []
+    extra_text_shapes: list[dict] = []
+    extra_autoshapes: list[dict] = []
 
 
 class MasterStyle(BaseModel):

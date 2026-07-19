@@ -276,18 +276,29 @@ class ContentReplayer:
             sldIdLst.remove(child)
 
     def _clear_placeholders(self, slide) -> None:
-        """清空幻灯片上的内容占位符，保留页眉页脚和日期/页码占位符"""
-        header_footer_types = (13, 14, 15, 16)
+        """清空幻灯片上的内容占位符的文字内容，保留占位符的样式（位置、字体、颜色）
+        
+        - 页眉/页脚/页码占位符保留不动
+        - 标题/正文/副标题占位符只清空文字，保留样式
+        - 非占位符形状都删掉（背景图和footer后面手动加）
+        """
+        header_footer_types = (13, 14, 15, 16)  # slide_number, header, footer, date
 
         shapes_to_remove = []
         for shape in slide.shapes:
             try:
                 if shape.is_placeholder:
                     phf = shape.placeholder_format
-                    if phf.type not in header_footer_types:
-                        shapes_to_remove.append(shape)
+                    if phf.type in header_footer_types:
+                        # 页眉页脚页码占位符保留不动
+                        continue
+                    # 标题/正文/副标题占位符：只清空文字内容，保留样式
+                    if shape.has_text_frame:
+                        for para in shape.text_frame.paragraphs:
+                            for run in para.runs:
+                                run.text = ""
                 else:
-                    # 非占位符形状都删掉（footer元素后面手动加）
+                    # 非占位符形状都删掉（背景图和footer后面手动加）
                     shapes_to_remove.append(shape)
             except Exception:
                 shapes_to_remove.append(shape)
@@ -451,18 +462,42 @@ class ContentReplayer:
         return min(1, len(list(master.slide_layouts)) - 1) if master else 1
 
     def _copy_slide_content(self, slide, model: SlideContentModel, slide_idx: int) -> None:
-        if not model.raw_shapes:
-            self._fill_simple_content(slide, model)
-            return
-
-        is_title_shape = True
-        for shape_data in model.raw_shapes:
-            # 标题形状使用模板格式
-            if is_title_shape and shape_data.get("type") == "text" and model.title:
-                self._add_text_shape(slide, shape_data, is_title=True)
-                is_title_shape = False
-            else:
-                self._add_shape_from_data(slide, shape_data)
+        """将内容回填到模板slide中，所有样式遵循模板
+        
+        核心原则：
+        1. 标题填入模板的title占位符（保留模板样式）
+        2. 正文填入模板的body占位符（保留模板样式）
+        3. 额外元素（图片、表格、装饰形状）按位置适配，样式用模板配色
+        """
+        # 1. 填入标题（使用模板标题占位符的样式）
+        if model.title:
+            self._fill_title_into_placeholder(slide, model.title)
+        
+        # 2. 填入正文文本（使用模板正文占位符的样式）
+        text_blocks = [b for b in model.body_blocks if b.type == "paragraph" and b.text]
+        if text_blocks:
+            self._fill_body_into_placeholder(slide, text_blocks)
+        
+        # 3. 处理额外元素（图片、表格等），位置按比例适配，样式用模板配色
+        for block in model.body_blocks:
+            if block.type == "image":
+                self._add_image_from_block(slide, block.content)
+            elif block.type == "table":
+                self._add_table_from_block(slide, block.content)
+        
+        # 4. 处理额外的自选图形（装饰性元素），样式用模板配色
+        if model.raw_shapes:
+            for shape_data in model.raw_shapes:
+                shape_type = shape_data.get("type")
+                if shape_type == "text":
+                    # 额外文本框：位置适配，字体用模板的正文字体，颜色用模板的正文颜色
+                    self._add_extra_text_shape(slide, shape_data)
+                elif shape_type == "autoshape":
+                    # 装饰形状：位置适配，颜色用模板的强调色
+                    self._add_extra_autoshape(slide, shape_data)
+                elif shape_type == "image":
+                    # 额外图片：位置适配
+                    self._add_image_shape(slide, shape_data)
 
     def _fill_simple_content(self, slide, model: SlideContentModel) -> None:
         if model.title:
@@ -595,62 +630,47 @@ class ContentReplayer:
         return self.template_formats.get("body", {})
 
     def _apply_run_format(self, run, run_data: dict, template_fmt: dict | None = None, is_title: bool = False) -> None:
-        """应用run格式，对于标题/正文使用模板要求的字体和大小"""
+        """应用run格式：完全遵循模板样式，只保留文字内容
+        
+        核心原则：
+        - 字体：模板的主题字体（标题用major，正文用minor）
+        - 字号：模板定义的字号
+        - 颜色：模板定义的颜色
+        - 粗体/斜体：模板要求的优先，否则保留原格式（装饰性）
+        """
         font = run.font
-
-        # 字体名称：优先使用模板的主题字体
+        
+        # 字体名称：使用模板的主题字体
         font_name = None
         if self.theme_fonts:
             font_name = self.theme_fonts.get("major" if is_title else "minor")
         if not font_name and template_fmt and template_fmt.get("font_name"):
             tmpl_font = template_fmt["font_name"]
-            # 处理主题字体引用：+mj-lt = major latin, +mn-lt = minor latin
             if tmpl_font.startswith("+mj") or tmpl_font.startswith("+mn"):
                 if self.theme_fonts:
                     font_name = self.theme_fonts.get("major" if "mj" in tmpl_font else "minor")
             else:
                 font_name = tmpl_font
-        if not font_name:
-            font_name = run_data.get("font_name")
         if font_name:
             font.name = font_name
-
-        # 字号：标题/正文使用模板要求的大小
-        font_size = run_data.get("font_size")
+        
+        # 字号：使用模板要求的大小
         if template_fmt and template_fmt.get("font_size"):
-            font_size = template_fmt["font_size"]
-        if font_size is not None:
-            font.size = font_size
-
-        # 粗体：标题强制使用模板要求，正文保留原格式
-        if is_title and template_fmt and template_fmt.get("bold") is not None:
+            font.size = template_fmt["font_size"]
+        
+        # 粗体：模板要求优先
+        if template_fmt and template_fmt.get("bold") is not None:
             font.bold = template_fmt["bold"]
-        elif run_data.get("bold") is not None:
-            font.bold = run_data["bold"]
-
-        # 斜体
-        if run_data.get("italic") is not None:
-            font.italic = run_data["italic"]
-
-        # 下划线
-        if run_data.get("underline") is not None:
-            font.underline = run_data["underline"]
-
-        # 颜色：
-        # - 标题：强制使用模板要求的颜色
-        # - 正文：深色背景模板强制用默认颜色，浅色背景保留原颜色（无颜色时用默认）
-        if is_title and template_fmt and template_fmt.get("color"):
-            color = template_fmt["color"]
-        elif self.default_text_color == "FFFFFF" and self.default_text_color:
-            # 深色背景（白色文字）：所有文字都用白色，覆盖原颜色
-            color = self.default_text_color
-        else:
-            color = run_data.get("color")
-            if not color and self.default_text_color:
-                color = self.default_text_color
-        if color:
+        
+        # 颜色：使用模板要求的颜色
+        if template_fmt and template_fmt.get("color"):
             try:
-                font.color.rgb = RGBColor.from_string(color)
+                font.color.rgb = RGBColor.from_string(template_fmt["color"])
+            except Exception:
+                pass
+        elif self.default_text_color:
+            try:
+                font.color.rgb = RGBColor.from_string(self.default_text_color)
             except Exception:
                 pass
 
@@ -1069,6 +1089,231 @@ class ContentReplayer:
 
             if shape_data.get("text") and shape.has_text_frame:
                 shape.text_frame.text = shape_data["text"]
+        except Exception:
+            pass
+
+    def _fill_title_into_placeholder(self, slide, title_text: str) -> None:
+        """将标题填入模板的标题占位符，并应用模板的标题样式"""
+        try:
+            if slide.shapes.title is not None:
+                tf = slide.shapes.title.text_frame
+                # 应用模板标题格式
+                template_fmt = self._get_template_format(True)
+                if tf.paragraphs:
+                    p = tf.paragraphs[0]
+                    # 清空原有run
+                    for run in p.runs:
+                        run.text = ""
+                    # 添加新run并设置内容和样式
+                    if p.runs:
+                        run = p.runs[0]
+                        run.text = title_text
+                        self._apply_run_format(run, {}, template_fmt, True)
+                    else:
+                        run = p.add_run()
+                        run.text = title_text
+                        self._apply_run_format(run, {}, template_fmt, True)
+                else:
+                    tf.text = title_text
+                return
+        except Exception:
+            pass
+        
+        # 备用：通过placeholder查找
+        for shape in slide.placeholders:
+            try:
+                phf = shape.placeholder_format
+                if phf.type in (0, 3):  # title, ctrTitle
+                    tf = shape.text_frame
+                    template_fmt = self._get_template_format(True)
+                    if tf.paragraphs:
+                        p = tf.paragraphs[0]
+                        for run in p.runs:
+                            run.text = ""
+                        if p.runs:
+                            run = p.runs[0]
+                            run.text = title_text
+                            self._apply_run_format(run, {}, template_fmt, True)
+                        else:
+                            run = p.add_run()
+                            run.text = title_text
+                            self._apply_run_format(run, {}, template_fmt, True)
+                    return
+            except Exception:
+                continue
+
+    def _fill_body_into_placeholder(self, slide, text_blocks: list) -> None:
+        """将正文填入模板的正文占位符，保留模板原有样式"""
+        body_placeholder = self._find_body_placeholder(slide)
+        if not body_placeholder:
+            return
+        
+        try:
+            tf = body_placeholder.text_frame
+            template_fmt = self.template_formats.get("body", {})
+            
+            # 清空现有内容（但保留第一段的样式）
+            # 先获取第一段的样式参考
+            ref_para = tf.paragraphs[0] if tf.paragraphs else None
+            
+            # 用clear清空所有段落，然后重新添加
+            tf.clear()
+            
+            # 填入新内容，每段应用模板格式
+            first = True
+            for block in text_blocks:
+                if first:
+                    p = tf.paragraphs[0]
+                    first = False
+                else:
+                    p = tf.add_paragraph()
+                p.text = block.text
+                p.level = block.level
+                if template_fmt:
+                    self._apply_template_format_to_paragraph(p, template_fmt)
+        except Exception:
+            pass
+
+    def _add_extra_text_shape(self, slide, shape_data: dict) -> None:
+        """添加额外的文本框：位置适配，样式用模板正文样式"""
+        try:
+            left = self._adapt_position(shape_data.get("left", Emu(914400)), "x")
+            top = self._adapt_position(shape_data.get("top", Emu(914400)), "y")
+            width = self._adapt_position(shape_data.get("width", Emu(914400 * 4)), "x")
+            height = self._adapt_position(shape_data.get("height", Emu(914400 * 2)), "y")
+            
+            textbox = slide.shapes.add_textbox(left, top, width, height)
+            tf = textbox.text_frame
+            tf.word_wrap = True
+            tf.clear()
+            
+            # 处理填充颜色：有填充颜色的视为装饰形状，用模板配色
+            fill_color = shape_data.get("fill_color")
+            if fill_color:
+                textbox.fill.solid()
+                if self.default_text_color == "FFFFFF":
+                    # 深色背景：装饰用白色
+                    textbox.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
+                else:
+                    # 浅色背景：用dark green background 2
+                    textbox.fill.fore_color.rgb = RGBColor.from_string("3DCD58")
+            
+            # 处理线条颜色
+            line_color = shape_data.get("line_color")
+            if line_color:
+                if self.default_text_color == "FFFFFF":
+                    textbox.line.color.rgb = RGBColor.from_string("FFFFFF")
+                else:
+                    textbox.line.color.rgb = RGBColor.from_string("3DCD58")
+            
+            # 判断是否是标题区域的文本
+            is_title = top < self.target_height * 0.2
+            template_fmt = self._get_template_format(is_title)
+            
+            paragraphs = shape_data.get("paragraphs", [])
+            for i, para_data in enumerate(paragraphs):
+                if i == 0:
+                    p = tf.paragraphs[0]
+                else:
+                    p = tf.add_paragraph()
+                
+                runs = para_data.get("runs", [])
+                if runs:
+                    for run_data in runs:
+                        run = p.add_run()
+                        run.text = run_data.get("text", "")
+                        self._apply_run_format(run, run_data, template_fmt, is_title)
+                else:
+                    p.text = para_data.get("text", "")
+                    if template_fmt:
+                        self._apply_template_format_to_paragraph(p, template_fmt)
+                
+                p.level = para_data.get("level", 0)
+        except Exception:
+            pass
+
+    def _add_extra_autoshape(self, slide, shape_data: dict) -> None:
+        """添加额外的装饰形状：位置适配，颜色用模板配色"""
+        try:
+            from pptx.enum.shapes import MSO_SHAPE
+            
+            shape_type_str = shape_data.get("shape_type", "")
+            mso_shape = MSO_SHAPE.RECTANGLE
+            try:
+                if "OVAL" in shape_type_str or "ELLIPSE" in shape_type_str:
+                    mso_shape = MSO_SHAPE.OVAL
+                elif "ROUNDED_RECTANGLE" in shape_type_str:
+                    mso_shape = MSO_SHAPE.ROUNDED_RECTANGLE
+                elif "LINE" in shape_type_str:
+                    mso_shape = MSO_SHAPE.LINE
+                elif "ARROW" in shape_type_str:
+                    mso_shape = MSO_SHAPE.RIGHT_ARROW
+            except Exception:
+                pass
+            
+            left = self._adapt_position(shape_data.get("left", Emu(914400)), "x")
+            top = self._adapt_position(shape_data.get("top", Emu(914400)), "y")
+            width = self._adapt_position(shape_data.get("width", Emu(914400 * 4)), "x")
+            height = self._adapt_position(shape_data.get("height", Emu(914400 * 2)), "y")
+            
+            shape = slide.shapes.add_shape(mso_shape, left, top, width, height)
+            
+            try:
+                shape.rotation = shape_data.get("rotation", 0)
+            except Exception:
+                pass
+            
+            # 使用模板的配色：深色背景用白色，浅色背景用强调色
+            if self.default_text_color == "FFFFFF":
+                # 深色背景：装饰用白色
+                shape.fill.solid()
+                shape.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
+                try:
+                    shape.line.color.rgb = RGBColor.from_string("FFFFFF")
+                except Exception:
+                    pass
+            else:
+                # 浅色背景：用dark green background 2
+                shape.fill.solid()
+                shape.fill.fore_color.rgb = RGBColor.from_string("3DCD58")
+                try:
+                    shape.line.color.rgb = RGBColor.from_string("3DCD58")
+                except Exception:
+                    pass
+            
+            # 如果有文字，应用模板样式
+            if shape_data.get("text") and shape.has_text_frame:
+                shape.text_frame.text = shape_data["text"]
+                template_fmt = self._get_template_format(False)
+                if template_fmt and shape.text_frame.paragraphs:
+                    for p in shape.text_frame.paragraphs:
+                        self._apply_template_format_to_paragraph(p, template_fmt)
+        except Exception:
+            pass
+
+    def _add_image_from_block(self, slide, content: dict) -> None:
+        """从body block添加图片：位置适配"""
+        try:
+            from io import BytesIO
+            stream = BytesIO(content.get("blob", b""))
+            left = self._adapt_position(content.get("left", Emu(914400)), "x")
+            top = self._adapt_position(content.get("top", Emu(914400)), "y")
+            width = self._adapt_position(content.get("width", Emu(914400 * 4)), "x")
+            height = self._adapt_position(content.get("height", Emu(914400 * 3)), "y")
+            slide.shapes.add_picture(stream, left, top, width, height)
+        except Exception:
+            pass
+
+    def _add_table_from_block(self, slide, content: dict) -> None:
+        """从body block添加表格"""
+        try:
+            self._add_table_full(slide, {
+                "left": content.get("left", Emu(914400)),
+                "top": content.get("top", Emu(914400)),
+                "width": content.get("width", Emu(914400 * 8)),
+                "height": content.get("height", Emu(914400 * 4)),
+                "data": content,
+            })
         except Exception:
             pass
 
