@@ -82,6 +82,15 @@ class PptxExtractor:
                 continue
 
             if shape.has_text_frame:
+                # 有填充色的自选图形（内容框）：不提取为body_block，保留形状整体
+                # 这样可以保留背景色，用于color pairing
+                from pptx.enum.shapes import MSO_SHAPE_TYPE
+                if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
+                    try:
+                        if shape.fill.type == 1:  # solid fill
+                            continue
+                    except Exception:
+                        pass
                 blocks = self._extract_text_blocks(shape, slide_index)
                 body_blocks.extend(blocks)
                 continue
@@ -134,6 +143,19 @@ class PptxExtractor:
     def _extract_shape(self, shape, slide_index: int) -> dict | None:
         try:
             shape_type = shape.shape_type
+
+            # 优先判断：自选图形（有填充色/边框）即使有文字，也当作autoshape处理
+            # 这样可以保留内容框的背景形状，用于 color pairing
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+            if shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
+                has_fill = False
+                try:
+                    if shape.fill.type == 1:  # solid fill
+                        has_fill = True
+                except Exception:
+                    pass
+                if has_fill:
+                    return self._extract_auto_shape(shape)
 
             if shape.has_text_frame:
                 return self._extract_text_shape(shape, slide_index)

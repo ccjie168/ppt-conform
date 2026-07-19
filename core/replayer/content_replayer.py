@@ -487,8 +487,40 @@ class ContentReplayer:
         
         # 4. 处理额外的自选图形（装饰性元素），样式用模板配色
         if model.raw_shapes:
+            # 收集已经被占位符处理的文本，避免重复
+            processed_texts = set()
+            if model.title:
+                processed_texts.add(model.title.strip())
+            for block in model.body_blocks:
+                if block.type == "paragraph" and block.text:
+                    processed_texts.add(block.text.strip())
+            
             for shape_data in model.raw_shapes:
                 shape_type = shape_data.get("type")
+                
+                # 跳过标题文本框（已经被填进标题占位符了）
+                if shape_type == "text" and model.title:
+                    shape_text = ""
+                    for para in shape_data.get("paragraphs", []):
+                        for run in para.get("runs", []):
+                            shape_text += run.get("text", "")
+                    if shape_text.strip() == model.title.strip():
+                        continue
+                
+                # 跳过正文文本框（已经被填进正文占位符了）
+                if shape_type == "text":
+                    shape_text = ""
+                    for para in shape_data.get("paragraphs", []):
+                        for run in para.get("runs", []):
+                            shape_text += run.get("text", "")
+                    shape_text = shape_text.strip()
+                    if shape_text and shape_text in processed_texts:
+                        continue
+                
+                # 跳过图片/表格（已经在body_blocks中处理了）
+                if shape_type in ("image", "table"):
+                    continue
+                
                 if shape_type == "text":
                     # 额外文本框：位置适配，字体用模板的正文字体，颜色用模板的正文颜色
                     self._add_extra_text_shape(slide, shape_data)
@@ -691,6 +723,73 @@ class ContentReplayer:
                     font.color.rgb = RGBColor.from_string(template_fmt["color"])
                 except Exception:
                     pass
+
+    def _is_light_color(self, hex_color: str) -> bool:
+        """判断颜色是否为浅色（亮度 > 0.5 视为浅色）"""
+        if not hex_color or len(hex_color) != 6:
+            return False
+        try:
+            r = int(hex_color[0:2], 16) / 255.0
+            g = int(hex_color[2:4], 16) / 255.0
+            b = int(hex_color[4:6], 16) / 255.0
+            # 相对亮度计算
+            luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            return luminance > 0.5
+        except Exception:
+            return False
+
+    def _get_text_color_for_bg(self, bg_color: str | None) -> str:
+        """根据背景颜色获取匹配的文字颜色（color pairing）
+        
+        - 浅色背景 → 深色文字（dk1: #0A2F24）
+        - 深色背景 → 浅色文字（白色: #FFFFFF）
+        - 无背景 → 使用默认文字颜色
+        """
+        if bg_color and self._is_light_color(bg_color):
+            # 浅色背景：用深色文字
+            return "0A2F24"
+        elif bg_color and not self._is_light_color(bg_color):
+            # 深色背景：用白色文字
+            return "FFFFFF"
+        else:
+            # 无背景：使用默认文字颜色
+            return self.default_text_color or "000000"
+
+    def _is_decoration_shape(self, shape_data: dict) -> bool:
+        """判断形状是否为装饰性形状（竖杆、小色块等）
+        
+        判断规则：
+        - 宽度很小（< 0.5in）且高宽比 > 3 → 竖杆类装饰
+        - 没有文字内容 → 装饰
+        - 面积很小 → 装饰
+        """
+        try:
+            width = shape_data.get("width", 0) or 0
+            height = shape_data.get("height", 0) or 0
+            width_in = width / 914400
+            height_in = height / 914400
+            
+            # 检查是否有文字
+            has_text = False
+            for para in shape_data.get("paragraphs", []):
+                for run in para.get("runs", []):
+                    if run.get("text", "").strip():
+                        has_text = True
+                        break
+                if has_text:
+                    break
+            
+            # 窄竖条（宽度<0.5in，高宽比>3）→ 装饰
+            if width_in < 0.5 and height_in > 0 and height_in / max(width_in, 0.01) > 3:
+                return True
+            
+            # 没有文字的小形状 → 装饰
+            if not has_text and width_in < 2 and height_in < 2:
+                return True
+            
+            return False
+        except Exception:
+            return False
 
     def _parse_alignment(self, align_str: str):
         """将字符串对齐方式转为PP_ALIGN枚举"""
@@ -1175,7 +1274,12 @@ class ContentReplayer:
             pass
 
     def _add_extra_text_shape(self, slide, shape_data: dict) -> None:
-        """添加额外的文本框：位置适配，样式用模板正文样式"""
+        """添加额外的文本框：位置适配，样式用模板正文样式
+        
+        Color Pairing 规则：
+        - 装饰形状（竖杆、小色块）：用模板强调色（浅色背景→深绿，深色背景→白色）
+        - 内容框（有文字的大形状）：保留原背景色，文字根据背景色深浅自动匹配
+        """
         try:
             left = self._adapt_position(shape_data.get("left", Emu(914400)), "x")
             top = self._adapt_position(shape_data.get("top", Emu(914400)), "y")
@@ -1187,28 +1291,44 @@ class ContentReplayer:
             tf.word_wrap = True
             tf.clear()
             
-            # 处理填充颜色：有填充颜色的视为装饰形状，用模板配色
             fill_color = shape_data.get("fill_color")
-            if fill_color:
+            is_decoration = self._is_decoration_shape(shape_data)
+            
+            if is_decoration:
+                # 装饰形状：用模板强调色
                 textbox.fill.solid()
                 if self.default_text_color == "FFFFFF":
-                    # 深色背景：装饰用白色
                     textbox.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
                 else:
-                    # 浅色背景：用dark green background 2
                     textbox.fill.fore_color.rgb = RGBColor.from_string("3DCD58")
+            elif fill_color:
+                # 内容框：保留原背景色（因为背景色决定了内容框的视觉效果）
+                textbox.fill.solid()
+                textbox.fill.fore_color.rgb = RGBColor.from_string(fill_color)
             
             # 处理线条颜色
             line_color = shape_data.get("line_color")
             if line_color:
-                if self.default_text_color == "FFFFFF":
-                    textbox.line.color.rgb = RGBColor.from_string("FFFFFF")
+                if is_decoration:
+                    if self.default_text_color == "FFFFFF":
+                        textbox.line.color.rgb = RGBColor.from_string("FFFFFF")
+                    else:
+                        textbox.line.color.rgb = RGBColor.from_string("3DCD58")
                 else:
-                    textbox.line.color.rgb = RGBColor.from_string("3DCD58")
+                    textbox.line.color.rgb = RGBColor.from_string(line_color)
             
             # 判断是否是标题区域的文本
             is_title = top < self.target_height * 0.2
             template_fmt = self._get_template_format(is_title)
+            
+            # 确定文字颜色：根据背景色做 color pairing
+            actual_bg_color = None
+            if is_decoration:
+                actual_bg_color = "FFFFFF" if self.default_text_color == "FFFFFF" else "3DCD58"
+            elif fill_color:
+                actual_bg_color = fill_color
+            
+            text_color_override = self._get_text_color_for_bg(actual_bg_color) if actual_bg_color else None
             
             paragraphs = shape_data.get("paragraphs", [])
             for i, para_data in enumerate(paragraphs):
@@ -1223,17 +1343,34 @@ class ContentReplayer:
                         run = p.add_run()
                         run.text = run_data.get("text", "")
                         self._apply_run_format(run, run_data, template_fmt, is_title)
+                        # 应用 color pairing 的文字颜色（覆盖模板样式）
+                        if text_color_override and run.text.strip():
+                            try:
+                                run.font.color.rgb = RGBColor.from_string(text_color_override)
+                            except Exception:
+                                pass
                 else:
                     p.text = para_data.get("text", "")
                     if template_fmt:
                         self._apply_template_format_to_paragraph(p, template_fmt)
+                    if text_color_override and p.text.strip():
+                        try:
+                            for run in p.runs:
+                                run.font.color.rgb = RGBColor.from_string(text_color_override)
+                        except Exception:
+                            pass
                 
                 p.level = para_data.get("level", 0)
         except Exception:
             pass
 
     def _add_extra_autoshape(self, slide, shape_data: dict) -> None:
-        """添加额外的装饰形状：位置适配，颜色用模板配色"""
+        """添加额外的装饰形状：位置适配，颜色用模板配色
+        
+        Color Pairing 规则：
+        - 装饰形状（小、无文字）：用模板强调色
+        - 内容框（大、有文字）：保留原背景色，文字根据背景色匹配
+        """
         try:
             from pptx.enum.shapes import MSO_SHAPE
             
@@ -1263,31 +1400,53 @@ class ContentReplayer:
             except Exception:
                 pass
             
-            # 使用模板的配色：深色背景用白色，浅色背景用强调色
-            if self.default_text_color == "FFFFFF":
-                # 深色背景：装饰用白色
-                shape.fill.solid()
-                shape.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
-                try:
-                    shape.line.color.rgb = RGBColor.from_string("FFFFFF")
-                except Exception:
-                    pass
-            else:
-                # 浅色背景：用dark green background 2
-                shape.fill.solid()
-                shape.fill.fore_color.rgb = RGBColor.from_string("3DCD58")
-                try:
-                    shape.line.color.rgb = RGBColor.from_string("3DCD58")
-                except Exception:
-                    pass
+            fill_color = shape_data.get("fill_color")
+            is_decoration = self._is_decoration_shape(shape_data)
             
-            # 如果有文字，应用模板样式
+            # 确定背景色
+            actual_bg_color = None
+            if is_decoration:
+                # 装饰形状：用模板强调色
+                if self.default_text_color == "FFFFFF":
+                    shape.fill.solid()
+                    shape.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
+                    actual_bg_color = "FFFFFF"
+                else:
+                    shape.fill.solid()
+                    shape.fill.fore_color.rgb = RGBColor.from_string("3DCD58")
+                    actual_bg_color = "3DCD58"
+                try:
+                    shape.line.color.rgb = RGBColor.from_string(actual_bg_color)
+                except Exception:
+                    pass
+            elif fill_color:
+                # 内容框：保留原背景色
+                shape.fill.solid()
+                shape.fill.fore_color.rgb = RGBColor.from_string(fill_color)
+                actual_bg_color = fill_color
+                line_color = shape_data.get("line_color")
+                if line_color:
+                    try:
+                        shape.line.color.rgb = RGBColor.from_string(line_color)
+                    except Exception:
+                        pass
+            
+            # 如果有文字，应用模板样式 + color pairing
             if shape_data.get("text") and shape.has_text_frame:
                 shape.text_frame.text = shape_data["text"]
                 template_fmt = self._get_template_format(False)
                 if template_fmt and shape.text_frame.paragraphs:
                     for p in shape.text_frame.paragraphs:
                         self._apply_template_format_to_paragraph(p, template_fmt)
+                # color pairing：根据背景色调整文字颜色
+                if actual_bg_color:
+                    text_color = self._get_text_color_for_bg(actual_bg_color)
+                    try:
+                        for p in shape.text_frame.paragraphs:
+                            for run in p.runs:
+                                run.font.color.rgb = RGBColor.from_string(text_color)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
