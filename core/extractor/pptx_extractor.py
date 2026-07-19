@@ -36,7 +36,39 @@ class PptxExtractor:
         except Exception:
             pass
 
+        slide_height = slide.part.package.presentation_part.presentation.slide_height
+        # 页眉区域：顶部8%
+        header_threshold = slide_height * 0.08
+        # 页脚区域：底部12%
+        footer_threshold = slide_height * 0.88
+
+        def _is_header_or_footer(shape) -> bool:
+            """判断形状是否在页眉或页脚区域"""
+            try:
+                top = shape.top or 0
+                height = shape.height or 0
+                bottom = top + height
+                # 标题占位符不算页眉页脚
+                if shape.is_placeholder:
+                    ph_type = shape.placeholder_format.type
+                    # 1=title, 2=body, 3=ctrTitle, 4=subTitle, 7=text
+                    if ph_type in (1, 2, 3, 4, 7):
+                        return False
+                # 完全在顶部5%区域 → 页眉
+                if bottom < header_threshold:
+                    return True
+                # 完全在底部10%区域 → 页脚
+                if top > footer_threshold:
+                    return True
+                return False
+            except Exception:
+                return False
+
         for shape in slide.shapes:
+            # 跳过页眉/页脚区域的形状（不抽取原PPT的页眉页脚，完全继承模板的）
+            if _is_header_or_footer(shape):
+                continue
+
             shape_data = self._extract_shape(shape, slide_index)
             if shape_data:
                 raw_shapes.append(shape_data)

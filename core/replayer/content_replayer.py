@@ -23,6 +23,7 @@ class ContentReplayer:
         self.template_width: int = 0
         self.template_height: int = 0
         self.footer_shapes: list[dict] = []
+        self.background_image: dict | None = None
 
         if template_path and Path(template_path).exists():
             extractor = TemplateFormatExtractor()
@@ -36,6 +37,7 @@ class ContentReplayer:
     def _analyze_template_footer(self, template_path: str, master_index: int = 0) -> None:
         """分析指定Master中的footer元素（图标、页脚文本等），用于复制到新slide"""
         self.footer_shapes = []
+        self.background_image = None
         try:
             from pptx import Presentation
             from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -54,6 +56,30 @@ class ContentReplayer:
                 try:
                     is_footer = False
                     shape_type = shape.shape_type
+
+                    # 检查是否是背景图（铺满整个页面的图片）
+                    if shape_type == MSO_SHAPE_TYPE.PICTURE:
+                        try:
+                            left = shape.left or 0
+                            top = shape.top or 0
+                            width = shape.width or 0
+                            height = shape.height or 0
+                            is_full_bg = (abs(left) < Emu(20000) and abs(top) < Emu(20000) and
+                                          abs(width - self.template_width) < Emu(50000) and
+                                          abs(height - self.template_height) < Emu(50000))
+                            if is_full_bg:
+                                # 保存背景图
+                                self.background_image = {
+                                    "image_blob": shape.image.blob,
+                                    "image_ext": shape.image.ext,
+                                    "left": left,
+                                    "top": top,
+                                    "width": width,
+                                    "height": height,
+                                }
+                                continue
+                        except Exception:
+                            pass
 
                     # 底部区域的图片（施耐德图标等）
                     if shape_type == MSO_SHAPE_TYPE.PICTURE:
@@ -211,6 +237,7 @@ class ContentReplayer:
                 slide = output_prs.slides.add_slide(output_prs.slide_layouts[1])
 
             self._clear_placeholders(slide)
+            self._add_background_image(slide)
             self._add_footer_shapes(slide)
             self._copy_slide_content(slide, model, slide_idx)
             self._check_and_fix_overflow(slide)
@@ -262,14 +289,44 @@ class ContentReplayer:
             except Exception:
                 pass
 
+    def _add_background_image(self, slide) -> None:
+        """将背景图添加到slide（最底层），并适配16:9尺寸"""
+        if not self.background_image:
+            return
+
+        try:
+            from io import BytesIO
+
+            target_width = self.target_width
+            target_height = self.target_height
+
+            image_blob = self.background_image["image_blob"]
+            stream = BytesIO(image_blob)
+
+            # 添加背景图（铺满整个页面）
+            pic = slide.shapes.add_picture(
+                stream,
+                left=0,
+                top=0,
+                width=target_width,
+                height=target_height,
+            )
+
+            # 将背景图移到最底层
+            spTree = slide.shapes._spTree
+            spTree.remove(pic._element)
+            spTree.insert(2, pic._element)  # 索引0是nvGrpSpPr，1是grpSpPr，2开始是形状
+        except Exception:
+            pass
+
     def _add_footer_shapes(self, slide) -> None:
         """将footer元素（施耐德图标、页脚文本等）添加到slide上，并适配16:9位置"""
         if not self.footer_shapes:
             return
 
         try:
-            target_width = slide.part.ppt.slide_width
-            target_height = slide.part.ppt.slide_height
+            target_width = self.target_width
+            target_height = self.target_height
         except Exception:
             target_width = Emu(12192000)
             target_height = Emu(6858000)
@@ -518,12 +575,20 @@ class ContentReplayer:
         """应用run格式，对于标题/正文使用模板要求的字体和大小"""
         font = run.font
 
-        # 字体名称：优先使用模板要求
-        font_name = run_data.get("font_name")
-        if template_fmt and template_fmt.get("font_name"):
-            font_name = template_fmt["font_name"]
-        elif not font_name and self.theme_fonts:
+        # 字体名称：优先使用模板的主题字体
+        font_name = None
+        if self.theme_fonts:
             font_name = self.theme_fonts.get("major" if is_title else "minor")
+        if not font_name and template_fmt and template_fmt.get("font_name"):
+            tmpl_font = template_fmt["font_name"]
+            # 处理主题字体引用：+mj-lt = major latin, +mn-lt = minor latin
+            if tmpl_font.startswith("+mj") or tmpl_font.startswith("+mn"):
+                if self.theme_fonts:
+                    font_name = self.theme_fonts.get("major" if "mj" in tmpl_font else "minor")
+            else:
+                font_name = tmpl_font
+        if not font_name:
+            font_name = run_data.get("font_name")
         if font_name:
             font.name = font_name
 
