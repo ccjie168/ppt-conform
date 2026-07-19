@@ -273,9 +273,18 @@ class ContentReplayer:
                 if layout_index >= len(slide_layouts):
                     layout_index = 0
                 slide = output_prs.slides.add_slide(slide_layouts[layout_index])
+                
+                # 动态获取当前layout的占位符映射（关键修复）
+                try:
+                    extractor = TemplateFormatExtractor()
+                    self.placeholder_mapping = extractor.extract_placeholder_mapping(
+                        self.template_path, selected_master_index, layout_index
+                    )
+                except Exception:
+                    pass
             else:
                 slide = output_prs.slides.add_slide(output_prs.slide_layouts[1])
-
+            
             self._clear_placeholders(slide)
             self._add_background_image(slide)
             self._add_footer_shapes(slide)
@@ -494,18 +503,115 @@ class ContentReplayer:
                 continue
 
     def _build_layout_map_from_master(self, master) -> dict:
+        """从Master中构建布局名称到索引的映射
+        
+        智能识别各种布局类型，优先选择最常用的内容页布局。
+        """
         mapping = {}
+        layout_names = []
+        
         for idx, layout in enumerate(master.slide_layouts):
             name = (layout.name or "").lower()
+            layout_names.append((idx, name, layout))
+            
+            # 直接用名称映射
             mapping[name] = idx
-            if "封面" in name or "cover" in name or "title" in name:
-                mapping["cover"] = idx
-            elif "章节" in name or "section" in name or "节" in name:
-                mapping["section"] = idx
-            elif "内容" in name or "content" in name:
-                mapping["content"] = idx
-            elif "结尾" in name or "结束" in name or "closing" in name or "end" in name:
-                mapping["closing"] = idx
+        
+        # 按优先级匹配各种布局类型
+        # 封面布局
+        cover_priorities = [
+            "title slide simple", "title slide", "cover", "封面",
+            "title slide with image", "title slide offer",
+        ]
+        for kw in cover_priorities:
+            for idx, name, layout in layout_names:
+                if kw in name and "cover" not in mapping:
+                    mapping["cover"] = idx
+                    break
+            if "cover" in mapping:
+                break
+        
+        # 章节分隔页
+        section_priorities = [
+            "section break for longer copy", "section break with subhead",
+            "section break", "section", "章节",
+        ]
+        for kw in section_priorities:
+            for idx, name, layout in layout_names:
+                if kw in name and "section" not in mapping:
+                    mapping["section"] = idx
+                    break
+            if "section" in mapping:
+                break
+        
+        # 结尾页
+        closing_priorities = [
+            "closing slide", "closing", "end", "结尾", "结束", "thank you",
+        ]
+        for kw in closing_priorities:
+            for idx, name, layout in layout_names:
+                if kw in name and "closing" not in mapping:
+                    mapping["closing"] = idx
+                    break
+            if "closing" in mapping:
+                break
+        
+        # 议程页
+        agenda_priorities = ["agenda", "议程"]
+        for kw in agenda_priorities:
+            for idx, name, layout in layout_names:
+                if kw in name and "agenda" not in mapping:
+                    mapping["agenda"] = idx
+                    break
+            if "agenda" in mapping:
+                break
+        
+        # 内容页布局（最常用的标准内容页）
+        # 优先级：one column > blank slide with title > 其他单列布局
+        content_priorities = [
+            "one column", "one column two line headline",
+            "one column with sketches", "blank slide with title",
+            "content", "正文",
+        ]
+        for kw in content_priorities:
+            for idx, name, layout in layout_names:
+                if kw in name and "content" not in mapping:
+                    mapping["content"] = idx
+                    break
+            if "content" in mapping:
+                break
+        
+        # 双列布局
+        two_col_priorities = [
+            "two columns", "two column", "2 column",
+            "two columns with subtitle",
+        ]
+        for kw in two_col_priorities:
+            for idx, name, layout in layout_names:
+                if kw in name and "two_column" not in mapping:
+                    mapping["two_column"] = idx
+                    break
+            if "two_column" in mapping:
+                break
+        
+        # 三列布局
+        three_col_priorities = ["three columns", "three column", "3 column"]
+        for kw in three_col_priorities:
+            for idx, name, layout in layout_names:
+                if kw in name and "three_column" not in mapping:
+                    mapping["three_column"] = idx
+                    break
+            if "three_column" in mapping:
+                break
+        
+        # 表格页（使用内容页布局即可）
+        if "table" not in mapping and "content" in mapping:
+            mapping["table"] = mapping["content"]
+        
+        # 图片页
+        if "image" not in mapping and "content" in mapping:
+            mapping["image"] = mapping["content"]
+        
         return mapping
 
     def _resolve_layout_index(self, layout_name: str, master, master_style: str) -> int:
@@ -660,60 +766,102 @@ class ContentReplayer:
     def _find_placeholder_by_role(self, slide, role: str) -> object | None:
         """根据语义角色查找模板占位符
         
-        优先根据 placeholder_mapping 中的类型和索引匹配，
-        如果找不到则根据占位符类型回退匹配。
+        匹配优先级（从高到低）：
+        1. placeholder_mapping 中类型和索引都匹配
+        2. placeholder_mapping 中类型匹配
+        3. 占位符名称模糊匹配
+        4. 角色特定的回退逻辑（title用slide.shapes.title，body找最大的文本占位符）
         """
-        if not self.placeholder_mapping:
-            # 没有映射表，使用回退逻辑
-            if role == "title":
-                return slide.shapes.title
-            elif role in ("body_main", "body_sidebar"):
-                return self._find_body_placeholder(slide)
-            elif role == "subtitle":
+        # 标题特殊处理：优先用 slide.shapes.title
+        if role == "title":
+            try:
+                if slide.shapes.title is not None:
+                    return slide.shapes.title
+            except Exception:
+                pass
+        
+        if self.placeholder_mapping:
+            ph_info = self.placeholder_mapping.get(role)
+            if ph_info:
+                target_type = ph_info.get("placeholder_type")
+                target_idx = ph_info.get("placeholder_idx")
+                target_name = ph_info.get("name", "")
+                
+                # 第一优先级：类型和索引都匹配
                 for shape in slide.placeholders:
                     try:
-                        if shape.placeholder_format.type == 4:
+                        phf = shape.placeholder_format
+                        if phf.type == target_type and phf.idx == target_idx:
                             return shape
                     except Exception:
                         continue
-            return None
+                
+                # 第二优先级：类型匹配
+                for shape in slide.placeholders:
+                    try:
+                        phf = shape.placeholder_format
+                        if phf.type == target_type:
+                            return shape
+                    except Exception:
+                        continue
+                
+                # 第三优先级：名称匹配
+                if target_name:
+                    for shape in slide.placeholders:
+                        try:
+                            if shape.name == target_name:
+                                return shape
+                        except Exception:
+                            continue
         
-        # 获取该角色对应的占位符信息
-        ph_info = self.placeholder_mapping.get(role)
-        if not ph_info:
-            # 角色没有对应的占位符信息，使用回退逻辑
-            if role == "title":
-                return slide.shapes.title
-            elif role in ("body_main", "body_sidebar"):
-                return self._find_body_placeholder(slide)
-            return None
-        
-        target_type = ph_info.get("placeholder_type")
-        target_idx = ph_info.get("placeholder_idx")
-        
-        # 第一优先级：类型和索引都匹配
-        for shape in slide.placeholders:
-            try:
-                phf = shape.placeholder_format
-                if phf.type == target_type and phf.idx == target_idx:
-                    return shape
-            except Exception:
-                continue
-        
-        # 第二优先级：类型匹配
-        for shape in slide.placeholders:
-            try:
-                phf = shape.placeholder_format
-                if phf.type == target_type:
-                    return shape
-            except Exception:
-                continue
-        
-        # 第三优先级：角色回退
+        # 第四优先级：角色特定的回退逻辑
         if role == "title":
-            return slide.shapes.title
-        elif role in ("body_main", "body_sidebar", "subtitle"):
-            return self._find_body_placeholder(slide)
+            # 找类型为1(TITLE)或3(CENTER_TITLE)的占位符
+            for shape in slide.placeholders:
+                try:
+                    phf = shape.placeholder_format
+                    if phf.type in (1, 3):
+                        return shape
+                except Exception:
+                    continue
+            # 最后尝试 slide.shapes.title（前面已经试过了，这里作为双保险）
+            try:
+                if slide.shapes.title is not None:
+                    return slide.shapes.title
+            except Exception:
+                pass
+        elif role in ("body_main", "body_sidebar"):
+            # 找最大的文本/内容占位符
+            best_placeholder = None
+            best_area = 0
+            for shape in slide.placeholders:
+                try:
+                    phf = shape.placeholder_format
+                    # 跳过页眉页脚
+                    if phf.type in (13, 14, 15, 16):
+                        continue
+                    # 跳过标题
+                    if phf.type in (1, 3):
+                        continue
+                    # 只考虑有文本框的占位符
+                    if shape.has_text_frame:
+                        area = (shape.width or 0) * (shape.height or 0)
+                        if area > best_area:
+                            best_area = area
+                            best_placeholder = shape
+                except Exception:
+                    continue
+            if best_placeholder:
+                return best_placeholder
+        elif role == "subtitle":
+            # 找类型为4(SUBTITLE)的占位符
+            for shape in slide.placeholders:
+                try:
+                    phf = shape.placeholder_format
+                    if phf.type == 4:
+                        return shape
+                except Exception:
+                    continue
         
         return None
 
@@ -1908,31 +2056,32 @@ class ContentReplayer:
         """根据内容模型和布局特征确定布局类型
         
         优先级：
-        1. original_layout_type（如果已检测）
-        2. layout_features 中的特征
-        3. 默认根据 slide_index 判断
+        1. original_layout_type（如果是封面/章节/结尾等特殊布局）
+        2. layout_features 中的特征（表格/图片/多列等）
+        3. 默认内容页布局
+        
+        注意：普通内容页的 original_layout_type 应该是 "content"，
+        不要因为布局名称包含 "title" 就误判为 "cover"
         """
-        # 优先使用原始布局类型
-        if model.original_layout_type:
+        # 特殊布局类型：封面、章节、结尾、议程 - 保留原始布局
+        special_layouts = {"cover", "section", "closing", "agenda"}
+        if model.original_layout_type and model.original_layout_type in special_layouts:
             return model.original_layout_type
         
         # 根据布局特征判断
         features = model.layout_features or {}
         
-        # 两列布局
+        # 多列布局
         if features.get("columns", 1) >= 2:
             return "two_column"
         
-        # 表格布局
+        # 表格页
         if features.get("has_table"):
             return "table"
         
-        # 图片布局
-        if features.get("has_image") and not features.get("has_title"):
+        # 图片页（有图片且文字少）
+        if features.get("has_image") and features.get("text_density", 1) < 0.3:
             return "image"
         
-        # 封面页（第一页且有标题）
-        if model.slide_index == 0:
-            return "cover"
-        
+        # 默认内容页
         return "content"

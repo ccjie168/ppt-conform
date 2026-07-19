@@ -755,16 +755,52 @@ class PptxExtractor:
             return ""
 
     def _detect_layout_type(self, slide, slide_index: int) -> str:
+        """检测原PPT的布局类型
+        
+        注意：不能仅凭layout名称判断，因为很多内容页布局名称也包含"Title"
+        需要结合：
+        1. layout名称中的关键词（精确匹配封面/章节/结尾）
+        2. 占位符类型和数量
+        3. 内容特征
+        """
         try:
             layout_name = (slide.slide_layout.name or "").lower()
-            if "封面" in layout_name or "cover" in layout_name or "title" in layout_name:
-                return "cover"
-            if "章节" in layout_name or "section" in layout_name:
+            
+            # 精确匹配封面布局（只有封面才会叫这些名字）
+            cover_keywords = [
+                "封面", "cover", "title slide", "opening",
+                "title slide simple", "title slide with image",
+                "title slide offer",
+            ]
+            for kw in cover_keywords:
+                if kw in layout_name:
+                    return "cover"
+            
+            # 章节页
+            if "章节" in layout_name or "section break" in layout_name:
                 return "section"
-            if "结尾" in layout_name or "结束" in layout_name or "closing" in layout_name:
+            
+            # 结尾页
+            if "结尾" in layout_name or "closing" in layout_name or "thank you" in layout_name:
                 return "closing"
+            
+            # 议程页
+            if "议程" in layout_name or "agenda" in layout_name:
+                return "agenda"
         except Exception:
             pass
+        
+        # 根据内容特征判断
         if slide_index == 0:
-            return "cover"
+            # 第一页：检查是否只有标题和副标题（典型封面特征）
+            try:
+                title_shape = slide.shapes.title
+                placeholders = list(slide.placeholders)
+                # 如果只有2个占位符（标题+副标题），则是封面
+                if len(placeholders) <= 2 and title_shape:
+                    return "cover"
+            except Exception:
+                pass
+        
+        # 默认是内容页
         return "content"

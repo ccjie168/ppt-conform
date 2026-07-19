@@ -253,8 +253,13 @@ class TemplateFormatExtractor:
             pass
         return None
 
-    def extract_placeholder_mapping(self, template_path: str, master_index: int = 0) -> dict:
+    def extract_placeholder_mapping(self, template_path: str, master_index: int = 0, layout_index: int | None = None) -> dict:
         """提取模板中占位符的语义映射表
+        
+        参数:
+            template_path: 模板文件路径
+            master_index: Master索引
+            layout_index: 如果指定，则只提取该layout的占位符；否则遍历所有layouts（不推荐，会互相覆盖）
         
         返回结构:
         {
@@ -278,8 +283,13 @@ class TemplateFormatExtractor:
         # 收集所有正文占位符（用于区分主正文和侧边栏）
         body_placeholders = []
         
-        # 从Master的Layouts中提取占位符
-        for layout in master.slide_layouts:
+        # 确定要处理的layouts
+        if layout_index is not None and layout_index < len(master.slide_layouts):
+            layouts_to_process = [master.slide_layouts[layout_index]]
+        else:
+            layouts_to_process = master.slide_layouts
+        
+        for layout in layouts_to_process:
             for shape in layout.placeholders:
                 try:
                     phf = shape.placeholder_format
@@ -288,28 +298,31 @@ class TemplateFormatExtractor:
                     
                     # 1=title, 3=ctrTitle
                     if ph_type in (1, 3):
-                        mapping.setdefault("title", {
-                            "placeholder_type": ph_type,
-                            "placeholder_idx": ph_idx,
-                            "name": shape.name,
-                            "left": shape.left,
-                            "top": shape.top,
-                            "width": shape.width,
-                            "height": shape.height,
-                        })
+                        # 如果是指定layout，直接设置；如果遍历所有layout，只设置第一个
+                        if layout_index is not None or "title" not in mapping:
+                            mapping["title"] = {
+                                "placeholder_type": ph_type,
+                                "placeholder_idx": ph_idx,
+                                "name": shape.name,
+                                "left": shape.left,
+                                "top": shape.top,
+                                "width": shape.width,
+                                "height": shape.height,
+                            }
                     # 4=subtitle
                     elif ph_type == 4:
-                        mapping.setdefault("subtitle", {
-                            "placeholder_type": ph_type,
-                            "placeholder_idx": ph_idx,
-                            "name": shape.name,
-                            "left": shape.left,
-                            "top": shape.top,
-                            "width": shape.width,
-                            "height": shape.height,
-                        })
-                    # 2=body, 7=text, 8=content, 9=object
-                    elif ph_type in (2, 7, 8, 9, 10):
+                        if layout_index is not None or "subtitle" not in mapping:
+                            mapping["subtitle"] = {
+                                "placeholder_type": ph_type,
+                                "placeholder_idx": ph_idx,
+                                "name": shape.name,
+                                "left": shape.left,
+                                "top": shape.top,
+                                "width": shape.width,
+                                "height": shape.height,
+                            }
+                    # 2=body, 7=text, 8=content, 9=object, 10=picture
+                    elif ph_type in (2, 7, 8, 9, 10, 18):
                         body_placeholders.append({
                             "placeholder_type": ph_type,
                             "placeholder_idx": ph_idx,
@@ -323,14 +336,30 @@ class TemplateFormatExtractor:
                     continue
         
         # 区分主正文和侧边栏
-        if len(body_placeholders) == 1:
-            mapping["body_main"] = body_placeholders[0]
-        elif len(body_placeholders) >= 2:
-            # 根据位置排序：左边的为主正文，右边的为侧边栏
-            body_placeholders.sort(key=lambda x: x["left"])
-            mapping["body_main"] = body_placeholders[0]
-            mapping["body_sidebar"] = body_placeholders[1]
-        # 如果没有body占位符，使用第一个非标题占位符
+        if body_placeholders:
+            # 过滤掉页眉页脚区域的占位符
+            slide_height = prs.slide_height
+            header_threshold = slide_height * 0.15
+            footer_threshold = slide_height * 0.85
+            
+            content_placeholders = [
+                p for p in body_placeholders
+                if p["top"] > header_threshold and p["top"] < footer_threshold
+            ]
+            
+            if not content_placeholders:
+                content_placeholders = body_placeholders
+            
+            # 按面积排序，最大的为主正文
+            content_placeholders.sort(key=lambda x: -(x["width"] * x["height"]))
+            
+            if len(content_placeholders) >= 1:
+                mapping["body_main"] = content_placeholders[0]
+            if len(content_placeholders) >= 2:
+                # 第二个作为侧边栏（按位置区分左右）
+                mapping["body_sidebar"] = content_placeholders[1]
+        
+        # 如果没有body占位符，设置默认值
         if "body_main" not in mapping:
             mapping["body_main"] = {
                 "placeholder_type": 2,
