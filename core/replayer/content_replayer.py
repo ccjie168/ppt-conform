@@ -1238,17 +1238,17 @@ class ContentReplayer:
         elif original_format and original_format.underline is not None:
             font.underline = original_format.underline
         
-        # 颜色：模板要求优先，原格式兜底，最后使用默认颜色
+        # 颜色：原格式优先（保留原设计意图），模板格式兜底，最后使用默认颜色
         color_applied = False
-        if template_fmt and template_fmt.get("color"):
+        if original_format and original_format.font_color:
             try:
-                font.color.rgb = RGBColor.from_string(template_fmt["color"])
+                font.color.rgb = RGBColor.from_string(original_format.font_color)
                 color_applied = True
             except Exception:
                 pass
-        elif original_format and original_format.font_color:
+        elif template_fmt and template_fmt.get("color"):
             try:
-                font.color.rgb = RGBColor.from_string(original_format.font_color)
+                font.color.rgb = RGBColor.from_string(template_fmt["color"])
                 color_applied = True
             except Exception:
                 pass
@@ -1302,15 +1302,15 @@ class ContentReplayer:
             elif original_format and original_format.italic is not None:
                 font.italic = original_format.italic
             
-            # 颜色：模板优先，原格式兜底
-            if template_fmt.get("color"):
-                try:
-                    font.color.rgb = RGBColor.from_string(template_fmt["color"])
-                except Exception:
-                    pass
-            elif original_format and original_format.font_color:
+            # 颜色：原格式优先（保留原设计意图），模板格式兜底
+            if original_format and original_format.font_color:
                 try:
                     font.color.rgb = RGBColor.from_string(original_format.font_color)
+                except Exception:
+                    pass
+            elif template_fmt.get("color"):
+                try:
+                    font.color.rgb = RGBColor.from_string(template_fmt["color"])
                 except Exception:
                     pass
 
