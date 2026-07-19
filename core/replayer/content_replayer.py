@@ -231,14 +231,23 @@ class ContentReplayer:
                     self.template_path, selected_master_index
                 )
                 
-                # 标题颜色：浅色背景(Master 0/1)用dark green background 2，深色背景(Master 2/3)用白色
+                # 根据master_style设置颜色配置（关键修复）
+                # F1/F2: 浅色背景，使用深色文字
+                # F3/F4: 深色背景，使用白色文字
+                master_style = config.master_style.upper()
+                self.master_style = master_style  # 保存为实例变量，供其他方法使用
                 colors = extractor.extract_theme_colors(self.template_path)
-                if selected_master_index in (0, 1):
-                    # 白色和浅绿模板：标题用 dark green background 2
+                
+                if master_style in ("F1", "F2"):
+                    # 浅色背景模板：正文用深色，标题用dark green background 2
                     self.title_text_color = colors.get("dk2", "3DCD58")
+                    # 确保正文颜色为深色
+                    if not self.default_text_color or self._is_light_color(self.default_text_color):
+                        self.default_text_color = "333333"
                 else:
-                    # 渐变和深绿模板：标题用白色
+                    # 深色背景模板(F3/F4)：正文和标题都用白色
                     self.title_text_color = colors.get("lt1", "FFFFFF")
+                    self.default_text_color = "FFFFFF"
                 
                 # 更新template_formats中的颜色
                 if self.default_text_color:
@@ -1901,12 +1910,17 @@ class ContentReplayer:
             elif fill_color:
                 actual_bg_color = fill_color
             else:
-                # 没有填充色的文本框：用slide背景色作为参考
-                # 如果是深色背景，给文本框加浅色背景，确保文字可见
-                if self.default_text_color == "FFFFFF":
+                # 没有填充色的文本框：根据master_style确定背景色
+                # F1/F2: 浅色背景，F3/F4: 深色背景
+                master_style = getattr(self, 'master_style', 'F1').upper()
+                if master_style in ("F3", "F4"):
+                    # 深色背景模板：给文本框加浅色背景，文字用深色
                     textbox.fill.solid()
                     textbox.fill.fore_color.rgb = RGBColor.from_string("E7FFD9")
                     actual_bg_color = "E7FFD9"
+                else:
+                    # 浅色背景模板：使用白色背景，文字用深色
+                    actual_bg_color = "FFFFFF"
             
             text_color_override = self._get_text_color_for_bg(actual_bg_color) if actual_bg_color else None
             

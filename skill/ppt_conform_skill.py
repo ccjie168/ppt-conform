@@ -22,8 +22,16 @@ def convert_ppt(input_path: str, output_path: str, master_style: str = "F1",
         content_models = extractor.extract(input_path)
 
         registry = TemplateRegistry()
+        
+        # 获取模板路径
+        template_path = None
+        import os
+        template_dir = os.path.join(os.path.dirname(__file__), "..", "templates")
+        template_path = os.path.join(template_dir, "corporate_template.pptx")
+        if not os.path.exists(template_path):
+            template_path = None
 
-        replayer = ContentReplayer(registry)
+        replayer = ContentReplayer(registry, template_path)
         temp_output = replayer.replay(content_models, config)
 
         validator = Validator()

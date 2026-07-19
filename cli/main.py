@@ -45,12 +45,23 @@ def main(input_path: str, output_path: str, master: str, header: bool, footer: b
         content_models = extractor.extract(input_path)
         click.echo(f"   共 {len(content_models)} 页")
 
-        # 2. 加载模板
+        # 3. 加载模板
         registry = TemplateRegistry()
         click.echo("2. 加载模板...")
+        
+        # 获取模板路径
+        master_style = registry.get_master_style(master)
+        template_path = None
+        if master_style:
+            template_path = Path(__file__).parent.parent / "templates" / "corporate_template.pptx"
+        
+        if template_path and template_path.exists():
+            click.echo(f"   使用模板: {template_path.name}")
+        else:
+            click.echo("   未找到模板文件，使用默认样式")
 
-        # 3. 重放内容
-        replayer = ContentReplayer(registry)
+        # 4. 重放内容
+        replayer = ContentReplayer(registry, str(template_path) if template_path else None)
         click.echo("3. 重放内容...")
         temp_output = replayer.replay(content_models, config)
 
