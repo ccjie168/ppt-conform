@@ -3,7 +3,7 @@
 > **项目路径**: `/workspace/ppt-conform/`
 > **GitHub 仓库**: https://github.com/ccjie168/ppt-conform
 > **最后更新**: 2026-07-19
-> **最新 Commit**: `d66b462` (feat: 解决内容与格式割裂问题，转换成功率达100%)
+> **最新 Commit**: `b3d799e` (docs: 新增项目状态总结、经验总结和README)
 
 ---
 
@@ -219,11 +219,12 @@ python -m cli.main --input source.pptx --style F1 --output output.pptx
 ```
 当前分支: master
 远程仓库: origin (https://github.com/ccjie168/ppt-conform.git)
-最新提交: d66b462 (feat: 解决内容与格式割裂问题，转换成功率达100%)
+最新提交: b3d799e (docs: 新增项目状态总结、经验总结和README)
 ```
 
 **最近提交记录**:
-1. `d66b462` - feat: 解决内容与格式割裂问题，转换成功率达100%
+1. `b3d799e` - docs: 新增项目状态总结、经验总结和README
+2. `d66b462` - feat: 解决内容与格式割裂问题，转换成功率达100%
 2. `8a4b5a5` - feat: 内容与格式分离架构，模板格式优先+原格式兜底
 3. `4febeb7` - fix: 修复4种风格识别问题，主题名称优先策略
 4. `db8ae26` - add template file

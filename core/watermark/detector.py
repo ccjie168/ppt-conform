@@ -23,12 +23,24 @@ class WatermarkDetector:
         if not text:
             return WatermarkReport(detected=False, elements=[], summary="No text")
 
+        text_stripped = text.strip()
+
         # Check keywords first (prefer longest match)
         matched_keyword = None
         for keyword in self.keywords:
             if keyword in text:
-                if matched_keyword is None or len(keyword) > len(matched_keyword):
-                    matched_keyword = keyword
+                # 区分"水印文本"和"包含水印词的正文"
+                # 水印通常是独立的短文本，如果文本远长于关键词，很可能是正文内容
+                # 只有当文本长度不超过关键词长度+10（允许少量前后缀）时才判定为水印
+                if len(text_stripped) <= len(keyword) + 10:
+                    if matched_keyword is None or len(keyword) > len(matched_keyword):
+                        matched_keyword = keyword
+                else:
+                    # 长文本：只有当文本主要是水印词时才判定
+                    # 计算关键词占文本的比例，超过50%才判定为水印
+                    if len(keyword) / len(text_stripped) > 0.5:
+                        if matched_keyword is None or len(keyword) > len(matched_keyword):
+                            matched_keyword = keyword
 
         if matched_keyword:
             return WatermarkReport(

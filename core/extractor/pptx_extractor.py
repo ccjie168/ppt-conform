@@ -65,7 +65,14 @@ class PptxExtractor:
         footer_threshold = slide_height * 0.88
 
         def _is_header_or_footer(shape) -> bool:
-            """判断形状是否在页眉或页脚区域"""
+            """判断形状是否在页眉或页脚区域
+            
+            判断逻辑：
+            1. 占位符类型为 title/body/subtitle 的不算页眉页脚
+            2. 位置在顶部8%或底部12%区域的形状
+            3. 但如果形状文本不包含页脚特征词（©、Page、页码），
+               且文本较长（>20字符），则不认为是页脚（可能是正文）
+            """
             try:
                 top = shape.top or 0
                 height = shape.height or 0
@@ -76,11 +83,28 @@ class PptxExtractor:
                     # 1=title, 2=body, 3=ctrTitle, 4=subTitle, 7=text
                     if ph_type in (1, 2, 3, 4, 7):
                         return False
-                # 完全在顶部5%区域 → 页眉
+                # 完全在顶部8%区域 → 页眉
                 if bottom < header_threshold:
                     return True
-                # 完全在底部10%区域 → 页脚
+                # 完全在底部12%区域 → 页脚
                 if top > footer_threshold:
+                    # 检查是否是真正的页脚内容
+                    # 页脚通常包含：©、Page、纯数字页码、公司名称
+                    # 如果是较长的正文内容，不当作页脚
+                    text = ""
+                    if shape.has_text_frame:
+                        text = shape.text_frame.text.strip()
+                    if text:
+                        # 短文本（<=20字符）：很可能是页脚（页码、版权等）
+                        if len(text) <= 20:
+                            return True
+                        # 长文本：检查是否包含页脚特征词
+                        footer_keywords = ["©", "Copyright", "Page ", "| Page", "All Rights Reserved", "KunPeng Testing Agent"]
+                        is_footer_like = any(kw in text for kw in footer_keywords)
+                        if is_footer_like:
+                            return True
+                        # 不包含页脚特征词的长文本：保留为正文
+                        return False
                     return True
                 return False
             except Exception:

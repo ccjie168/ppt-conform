@@ -645,15 +645,17 @@ class ContentReplayer:
         # 如果没有占位符标题，从 body_blocks 中找 semantic_role="title" 的 block 作为标题
         title_text = model.title
         title_format = model.title_format
+        # 记录被用作标题的 block（只取第一个，其余的作为副标题处理）
+        title_block_processed = None
         if not title_text:
             title_blocks = [b for b in model.body_blocks if b.semantic_role == "title" and b.text]
             if title_blocks:
                 title_text = title_blocks[0].text
                 title_format = title_blocks[0].text_format
-                # 标记这些 block 对应的 raw_shape_id 已处理
-                for block in title_blocks:
-                    if block.raw_shape_id is not None:
-                        processed_shape_ids.add(block.raw_shape_id)
+                title_block_processed = title_blocks[0]
+                # 标记这个 block 对应的 raw_shape_id 已处理
+                if title_blocks[0].raw_shape_id is not None:
+                    processed_shape_ids.add(title_blocks[0].raw_shape_id)
         
         # 1. 填入标题（使用模板标题占位符的样式，原格式兜底）
         if title_text:
@@ -664,15 +666,20 @@ class ContentReplayer:
                 # 备用：使用 slide.shapes.title
                 self._fill_title_into_placeholder(slide, title_text, None, title_format)
         
-        # 2. 根据语义角色分组正文内容（排除已作为标题处理的 block）
+        # 2. 根据语义角色分组正文内容
+        # 剩余的 semantic_role="title" block（未被用作标题的）作为副标题处理
         body_main_blocks = []
         body_sidebar_blocks = []
         subtitle_blocks = []
         other_blocks = []
         
         for block in model.body_blocks:
-            # 跳过已作为标题处理的 block
-            if block.semantic_role == "title" and not model.title and title_text:
+            # 跳过被用作标题的那一个 block
+            if title_block_processed is not None and block is title_block_processed:
+                continue
+            # 剩余的 role="title" block 作为副标题
+            if block.semantic_role == "title" and block.text:
+                subtitle_blocks.append(block)
                 continue
             if block.type == "paragraph" and block.text:
                 if block.semantic_role == "subtitle":
@@ -695,13 +702,17 @@ class ContentReplayer:
                 for block in subtitle_blocks:
                     if block.raw_shape_id is not None:
                         processed_shape_ids.add(block.raw_shape_id)
+            else:
+                # 模板没有副标题占位符：将副标题合并到主正文的最前面
+                body_main_blocks = subtitle_blocks + body_main_blocks
         
         # 4. 填入主正文（使用模板正文占位符的样式）
         # 判断是否应该用占位符填入：只有当主正文来自同一个 shape 时才用占位符
         # 如果主正文来自多个不同 shape，说明原PPT有多个文本框，应该按原位置回填
+        # 注意：副标题合并进来时不影响多shape判断（副标题应该和正文一起填入占位符）
         main_block_shape_ids = set()
         for block in body_main_blocks:
-            if block.raw_shape_id is not None:
+            if block.raw_shape_id is not None and block.semantic_role != "title":
                 main_block_shape_ids.add(block.raw_shape_id)
         
         # 如果主正文来自同一个 shape（或没有 shape_id），填入占位符
