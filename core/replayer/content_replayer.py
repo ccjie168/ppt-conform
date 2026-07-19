@@ -290,72 +290,32 @@ class ContentReplayer:
                 pass
 
     def _add_background_image(self, slide) -> None:
-        """将背景图设置为slide的背景填充，铺满整个页面"""
+        """将背景图添加到slide（最底层），并适配16:9尺寸"""
         if not self.background_image:
             return
 
         try:
             from io import BytesIO
-            from pptx.oxml.ns import qn
-            from lxml import etree
+
+            target_width = self.target_width
+            target_height = self.target_height
 
             image_blob = self.background_image["image_blob"]
-            image_ext = self.background_image.get("image_ext", "png")
-
-            # 将图片添加到slide的关系中
-            slide_part = slide.part
-            image_partname = f'/ppt/media/background.{image_ext}'
-            
-            # 使用 slide.part 的方式添加图片
-            from pptx.opc.package import Part
-            from pptx.opc.constants import RELATIONSHIP_TYPE as RT
-            
-            # 找到一个可用的 rId
-            rId = f'rIdBg{len(slide_part.rels)+100}'
-            
-            # 直接用 add_picture 来获取图片，然后改为背景填充
-            # 先添加图片到 slide 的 image parts
             stream = BytesIO(image_blob)
-            
-            # 使用更简单的方法：先添加一个图片获取 rId，然后删掉，用 rId 设置背景
-            pic = slide.shapes.add_picture(stream, 0, 0, 100, 100)
-            # 获取图片的 rId
-            blip = pic._element.find('.//' + qn('a:blip'))
-            embed_rId = blip.get(qn('r:embed'))
-            # 删除图片形状
+
+            # 添加背景图（铺满整个页面）
+            pic = slide.shapes.add_picture(
+                stream,
+                left=0,
+                top=0,
+                width=target_width,
+                height=target_height,
+            )
+
+            # 将背景图移到最底层
             spTree = slide.shapes._spTree
             spTree.remove(pic._element)
-            
-            # 设置 slide 背景为图片填充
-            cSld = slide._element.find(qn('p:cSld'))
-            if cSld is None:
-                return
-            
-            # 移除现有的背景
-            bg = cSld.find(qn('p:bg'))
-            if bg is not None:
-                cSld.remove(bg)
-            
-            # 创建新的背景
-            bg = etree.SubElement(cSld, qn('p:bg'))
-            bgPr = etree.SubElement(bg, qn('p:bgPr'))
-            
-            # 效果列表（空）
-            effectLst = etree.SubElement(bgPr, qn('a:effectLst'))
-            
-            # 图片填充
-            blipFill = etree.SubElement(bgPr, qn('p:blipFill'))
-            blip = etree.SubElement(blipFill, qn('a:blip'))
-            blip.set(qn('r:embed'), embed_rId)
-            
-            # 拉伸填充
-            stretch = etree.SubElement(blipFill, qn('a:stretch'))
-            fillRect = etree.SubElement(stretch, qn('a:fillRect'))
-            
-            # 在 cSld 开头插入 bg（确保在 spTree 之前）
-            cSld.remove(bg)
-            cSld.insert(0, bg)
-            
+            spTree.insert(2, pic._element)  # 索引0是nvGrpSpPr，1是grpSpPr，2开始是形状
         except Exception:
             pass
 
