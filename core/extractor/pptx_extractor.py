@@ -177,7 +177,8 @@ class PptxExtractor:
                 if title_text:
                     watermark_report = self.watermark_detector.detect_text(title_text, slide_index)
                     if not watermark_report.detected:
-                        title = title_text
+                        # 清理标题中可能包含的水印关键词（即使不判定为水印段落）
+                        title = self.watermark_detector.clean_text(title_text)
                         layout_features["has_title"] = True
                         # 记录标题来源占位符信息
                         try:
@@ -485,7 +486,7 @@ class PptxExtractor:
                 cell_data = {
                     "row": r,
                     "col": c,
-                    "text": cell.text.strip(),
+                    "text": self.watermark_detector.clean_text(cell.text.strip()),
                     "fill_color": None,
                     "font_name": None,
                     "font_size": None,
@@ -594,7 +595,7 @@ class PptxExtractor:
 
             try:
                 if chart.has_title and chart.chart_title:
-                    chart_title = chart.chart_title.text_frame.text
+                    chart_title = self.watermark_detector.clean_text(chart.chart_title.text_frame.text)
             except Exception:
                 pass
 
@@ -656,7 +657,7 @@ class PptxExtractor:
                     ca = chart.category_axis
                     x_axis = {
                         "has_title": ca.has_title,
-                        "title": ca.axis_title.text_frame.text if ca.has_title and ca.axis_title else None,
+                        "title": self.watermark_detector.clean_text(ca.axis_title.text_frame.text) if ca.has_title and ca.axis_title else None,
                         "visible": ca.visible,
                     }
             except Exception:
@@ -666,7 +667,7 @@ class PptxExtractor:
                     va = chart.value_axis
                     y_axis = {
                         "has_title": va.has_title,
-                        "title": va.axis_title.text_frame.text if va.has_title and va.axis_title else None,
+                        "title": self.watermark_detector.clean_text(va.axis_title.text_frame.text) if va.has_title and va.axis_title else None,
                         "visible": va.visible,
                         "minimum_scale": va.minimum_scale,
                         "maximum_scale": va.maximum_scale,

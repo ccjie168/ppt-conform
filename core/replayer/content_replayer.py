@@ -2171,6 +2171,9 @@ class ContentReplayer:
 
                 if template_fmt:
                     self._apply_template_format_to_paragraph(p, template_fmt)
+            
+            # 自动调整文本框大小以适应内容，避免文本溢出
+            self._auto_fit_textbox(textbox)
         except Exception:
             pass
 
