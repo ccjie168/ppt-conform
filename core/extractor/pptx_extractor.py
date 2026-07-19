@@ -153,6 +153,8 @@ class PptxExtractor:
                             }
                         except Exception:
                             title_source = {}
+                        # 提取标题格式信息
+                        title_format = self._extract_title_format(shape)
                 continue
 
             if shape.has_text_frame:
@@ -244,6 +246,7 @@ class PptxExtractor:
             raw_shapes=raw_shapes,
             layout_features=layout_features,
             title_source=title_source,
+            title_format=title_format,
         )
 
     def _extract_shape(self, shape, slide_index: int) -> dict | None:
@@ -699,7 +702,7 @@ class PptxExtractor:
     def _extract_text_blocks(self, shape, slide_index: int, semantic_role: str = "unknown", source_shape=None) -> list[ContentBlock]:
         blocks = []
         tf = shape.text_frame
-
+        
         # 记录占位符信息
         ph_type = None
         ph_idx = None
@@ -710,7 +713,10 @@ class PptxExtractor:
                 ph_idx = source_shape.placeholder_format.idx
             except Exception:
                 pass
-
+        
+        # 提取形状格式
+        shape_format = self._extract_shape_format(source_shape or shape)
+        
         for paragraph in tf.paragraphs:
             text = paragraph.text.strip()
             if not text:
@@ -719,6 +725,9 @@ class PptxExtractor:
             watermark_report = self.watermark_detector.detect_text(text, slide_index)
             if watermark_report.detected:
                 continue
+            
+            # 提取段落格式（取第一个run的格式）
+            text_format = self._extract_text_format(paragraph)
 
             blocks.append(ContentBlock(
                 type="paragraph",
@@ -728,8 +737,115 @@ class PptxExtractor:
                 original_placeholder_type=ph_type,
                 original_placeholder_idx=ph_idx,
                 source_shape_id=shape_id,
+                text_format=text_format,
+                shape_format=shape_format if blocks == [] else None,
             ))
         return blocks
+
+    def _extract_title_format(self, shape) -> TextFormat | None:
+        """从标题形状中提取文本格式信息"""
+        try:
+            if not shape.has_text_frame:
+                return None
+            tf = shape.text_frame
+            if not tf.paragraphs:
+                return None
+            return self._extract_text_format(tf.paragraphs[0])
+        except Exception:
+            return None
+
+    def _extract_text_format(self, paragraph) -> TextFormat | None:
+        """从段落中提取文本格式信息"""
+        try:
+            text_format = TextFormat()
+            
+            # 获取第一个run的格式
+            if paragraph.runs:
+                run = paragraph.runs[0]
+                font = run.font
+                
+                if font.name:
+                    text_format.font_name = font.name
+                if font.size:
+                    text_format.font_size = font.size.pt
+                if font.bold is not None:
+                    text_format.bold = font.bold
+                if font.italic is not None:
+                    text_format.italic = font.italic
+                if font.underline is not None:
+                    text_format.underline = font.underline
+                if font.color and font.color.rgb:
+                    text_format.font_color = str(font.color.rgb)
+            
+            # 段落对齐
+            if paragraph.alignment is not None:
+                text_format.alignment = paragraph.alignment.value
+            
+            # 行距
+            try:
+                if paragraph.space_before is not None:
+                    text_format.line_spacing = paragraph.space_before.pt
+            except Exception:
+                pass
+            
+            return text_format
+        except Exception:
+            return None
+
+    def _extract_shape_format(self, shape) -> ShapeFormat | None:
+        """从形状中提取形状格式信息"""
+        try:
+            shape_format = ShapeFormat()
+            
+            # 位置和大小
+            if shape.left is not None:
+                shape_format.left = shape.left
+            if shape.top is not None:
+                shape_format.top = shape.top
+            if shape.width is not None:
+                shape_format.width = shape.width
+            if shape.height is not None:
+                shape_format.height = shape.height
+            
+            # 旋转
+            if shape.rotation is not None:
+                shape_format.rotation = shape.rotation
+            
+            # 形状类型
+            try:
+                shape_format.shape_type = str(shape.shape_type)
+            except Exception:
+                pass
+            
+            # 填充
+            try:
+                fill = shape.fill
+                if fill.type == 1:  # solid
+                    shape_format.fill_type = "solid"
+                    if fill.fore_color and fill.fore_color.rgb:
+                        shape_format.fill_color = str(fill.fore_color.rgb)
+                elif fill.type == 2:  # gradient
+                    shape_format.fill_type = "gradient"
+                elif fill.type == 3:  # picture
+                    shape_format.fill_type = "picture"
+                else:
+                    shape_format.fill_type = "none"
+            except Exception:
+                pass
+            
+            # 线条
+            try:
+                line = shape.line
+                if line.color and line.color.rgb:
+                    shape_format.line_color = str(line.color.rgb)
+                if line.width is not None:
+                    shape_format.line_width = line.width
+            except Exception:
+                pass
+            
+            return shape_format
+        except Exception:
+            return None
 
     def _extract_group(self, group, slide_index: int) -> list[ContentBlock]:
         blocks = []

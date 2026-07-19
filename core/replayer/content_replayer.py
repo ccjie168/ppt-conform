@@ -639,14 +639,16 @@ class ContentReplayer:
         4. 侧边栏内容填入模板的body_sidebar占位符
         5. 额外元素（图片、表格、装饰形状）按位置适配，样式用模板配色
         """
-        # 1. 填入标题（使用模板标题占位符的样式）
+        # 1. 填入标题（使用模板标题占位符的样式，原格式兜底）
         if model.title:
             title_placeholder = self._find_placeholder_by_role(slide, "title")
+            # 获取原PPT中标题的格式信息
+            title_original_format = model.title_format if hasattr(model, 'title_format') else None
             if title_placeholder:
-                self._fill_title_into_placeholder(slide, model.title, title_placeholder)
+                self._fill_title_into_placeholder(slide, model.title, title_placeholder, title_original_format)
             else:
                 # 备用：使用 slide.shapes.title
-                self._fill_title_into_placeholder(slide, model.title)
+                self._fill_title_into_placeholder(slide, model.title, None, title_original_format)
         
         # 2. 根据语义角色分组正文内容
         body_main_blocks = []
@@ -667,7 +669,7 @@ class ContentReplayer:
             else:
                 other_blocks.append(block)
         
-        # 3. 填入副标题（如果有）
+        # 3. 填入副标题（如果有，原格式兜底）
         if subtitle_blocks:
             subtitle_placeholder = self._find_placeholder_by_role(slide, "subtitle")
             if subtitle_placeholder:
@@ -924,16 +926,12 @@ class ContentReplayer:
         tf.word_wrap = True
         tf.clear()
 
-        # 应用文本框填充色和边框色
+        # 应用文本框填充色和边框色（保留原格式）
         fill_color = shape_data.get("fill_color")
         if fill_color:
             try:
                 textbox.fill.solid()
-                # 深色背景模板：装饰性形状/文本框改为白色
-                if self.default_text_color == "FFFFFF":
-                    textbox.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
-                else:
-                    textbox.fill.fore_color.rgb = RGBColor.from_string(fill_color)
+                textbox.fill.fore_color.rgb = RGBColor.from_string(fill_color)
             except Exception:
                 pass
 
@@ -941,11 +939,7 @@ class ContentReplayer:
         line_width = shape_data.get("line_width")
         if line_color:
             try:
-                # 深色背景模板：装饰性线条改为白色
-                if self.default_text_color == "FFFFFF":
-                    textbox.line.color.rgb = RGBColor.from_string("FFFFFF")
-                else:
-                    textbox.line.color.rgb = RGBColor.from_string(line_color)
+                textbox.line.color.rgb = RGBColor.from_string(line_color)
                 if line_width:
                     textbox.line.width = line_width
             except Exception:
@@ -966,11 +960,23 @@ class ContentReplayer:
                 for run_data in runs:
                     run = p.add_run()
                     run.text = run_data.get("text", "")
-                    self._apply_run_format(run, run_data, template_fmt, is_title)
+                    # 从run_data中提取原格式信息
+                    original_format = None
+                    if run_data:
+                        from core.models import TextFormat
+                        original_format = TextFormat(
+                            font_name=run_data.get("font_name"),
+                            font_size=run_data.get("font_size").pt if run_data.get("font_size") else None,
+                            font_color=run_data.get("color"),
+                            bold=run_data.get("bold"),
+                            italic=run_data.get("italic"),
+                            underline=run_data.get("underline"),
+                        )
+                    self._apply_run_format(run, run_data, template_fmt, is_title, original_format)
             else:
                 p.text = para_data.get("text", "")
-                # 应用模板格式到整段
-                if is_title and template_fmt:
+                # 应用模板格式到整段（原格式兜底）
+                if template_fmt:
                     self._apply_template_format_to_paragraph(p, template_fmt)
 
             p.level = para_data.get("level", 0)
@@ -995,18 +1001,18 @@ class ContentReplayer:
             return self.template_formats.get("title", {})
         return self.template_formats.get("body", {})
 
-    def _apply_run_format(self, run, run_data: dict, template_fmt: dict | None = None, is_title: bool = False) -> None:
-        """应用run格式：完全遵循模板样式，只保留文字内容
+    def _apply_run_format(self, run, run_data: dict, template_fmt: dict | None = None, is_title: bool = False, original_format=None) -> None:
+        """应用run格式：模板格式优先，原格式兜底
         
         核心原则：
-        - 字体：模板的主题字体（标题用major，正文用minor）
-        - 字号：模板定义的字号
-        - 颜色：模板定义的颜色
-        - 粗体/斜体：模板要求的优先，否则保留原格式（装饰性）
+        - 字体：模板的主题字体优先，否则使用原格式的字体
+        - 字号：模板定义的字号优先，否则使用原格式的字号
+        - 颜色：模板定义的颜色优先，否则使用原格式的颜色
+        - 粗体/斜体：模板要求的优先，否则保留原格式
         """
         font = run.font
         
-        # 字体名称：使用模板的主题字体
+        # 字体名称：模板主题字体优先，原格式兜底
         font_name = None
         if self.theme_fonts:
             font_name = self.theme_fonts.get("major" if is_title else "minor")
@@ -1017,44 +1023,108 @@ class ContentReplayer:
                     font_name = self.theme_fonts.get("major" if "mj" in tmpl_font else "minor")
             else:
                 font_name = tmpl_font
+        if not font_name and original_format and original_format.font_name:
+            font_name = original_format.font_name
         if font_name:
             font.name = font_name
         
-        # 字号：使用模板要求的大小
+        # 字号：模板要求优先，原格式兜底
         if template_fmt and template_fmt.get("font_size"):
             font.size = template_fmt["font_size"]
+        elif original_format and original_format.font_size:
+            font.size = Pt(original_format.font_size)
         
-        # 粗体：模板要求优先
+        # 粗体：模板要求优先，原格式兜底
         if template_fmt and template_fmt.get("bold") is not None:
             font.bold = template_fmt["bold"]
+        elif original_format and original_format.bold is not None:
+            font.bold = original_format.bold
         
-        # 颜色：使用模板要求的颜色
+        # 斜体：模板要求优先，原格式兜底
+        if template_fmt and template_fmt.get("italic") is not None:
+            font.italic = template_fmt["italic"]
+        elif original_format and original_format.italic is not None:
+            font.italic = original_format.italic
+        
+        # 下划线：模板要求优先，原格式兜底
+        if template_fmt and template_fmt.get("underline") is not None:
+            font.underline = template_fmt["underline"]
+        elif original_format and original_format.underline is not None:
+            font.underline = original_format.underline
+        
+        # 颜色：模板要求优先，原格式兜底，最后使用默认颜色
+        color_applied = False
         if template_fmt and template_fmt.get("color"):
             try:
                 font.color.rgb = RGBColor.from_string(template_fmt["color"])
+                color_applied = True
+            except Exception:
+                pass
+        elif original_format and original_format.font_color:
+            try:
+                font.color.rgb = RGBColor.from_string(original_format.font_color)
+                color_applied = True
             except Exception:
                 pass
         elif self.default_text_color:
             try:
                 font.color.rgb = RGBColor.from_string(self.default_text_color)
+                color_applied = True
             except Exception:
                 pass
 
-    def _apply_template_format_to_paragraph(self, paragraph, template_fmt: dict) -> None:
-        """将模板格式应用到整个段落"""
+    def _apply_template_format_to_paragraph(self, paragraph, template_fmt: dict, original_format=None) -> None:
+        """将模板格式应用到整个段落：模板格式优先，原格式兜底"""
+        # 对齐：模板优先，原格式兜底
         if template_fmt.get("alignment"):
             paragraph.alignment = self._parse_alignment(template_fmt["alignment"])
+        elif original_format and original_format.alignment is not None:
+            from pptx.enum.text import PP_ALIGN
+            alignment_map = {0: PP_ALIGN.LEFT, 1: PP_ALIGN.CENTER, 2: PP_ALIGN.RIGHT, 3: PP_ALIGN.JUSTIFY}
+            paragraph.alignment = alignment_map.get(original_format.alignment)
+        
+        # 行距：模板优先，原格式兜底
+        if original_format and original_format.line_spacing:
+            try:
+                paragraph.line_spacing = Pt(original_format.line_spacing)
+            except Exception:
+                pass
+        
         for run in paragraph.runs:
             font = run.font
+            # 字体名称：模板优先，原格式兜底
             if template_fmt.get("font_name"):
                 font.name = template_fmt["font_name"]
+            elif original_format and original_format.font_name:
+                font.name = original_format.font_name
+            
+            # 字号：模板优先，原格式兜底
             if template_fmt.get("font_size"):
                 font.size = template_fmt["font_size"]
+            elif original_format and original_format.font_size:
+                font.size = Pt(original_format.font_size)
+            
+            # 粗体：模板优先，原格式兜底
             if template_fmt.get("bold") is not None:
                 font.bold = template_fmt["bold"]
+            elif original_format and original_format.bold is not None:
+                font.bold = original_format.bold
+            
+            # 斜体：模板优先，原格式兜底
+            if template_fmt.get("italic") is not None:
+                font.italic = template_fmt["italic"]
+            elif original_format and original_format.italic is not None:
+                font.italic = original_format.italic
+            
+            # 颜色：模板优先，原格式兜底
             if template_fmt.get("color"):
                 try:
                     font.color.rgb = RGBColor.from_string(template_fmt["color"])
+                except Exception:
+                    pass
+            elif original_format and original_format.font_color:
+                try:
+                    font.color.rgb = RGBColor.from_string(original_format.font_color)
                 except Exception:
                     pass
 
@@ -1573,11 +1643,13 @@ class ContentReplayer:
         except Exception:
             pass
 
-    def _fill_title_into_placeholder(self, slide, title_text: str, title_placeholder=None) -> None:
+    def _fill_title_into_placeholder(self, slide, title_text: str, title_placeholder=None, original_format=None) -> None:
         """将标题填入模板的标题占位符，并应用模板的标题样式
         
         如果指定了 title_placeholder，则填入该占位符；
         否则查找 slide.shapes.title 或第一个标题占位符。
+        
+        original_format: 原PPT中标题的格式信息（TextFormat对象），用于模板未定义时兜底
         """
         try:
             # 优先使用传入的占位符
@@ -1591,11 +1663,11 @@ class ContentReplayer:
                     if p.runs:
                         run = p.runs[0]
                         run.text = title_text
-                        self._apply_run_format(run, {}, template_fmt, True)
+                        self._apply_run_format(run, {}, template_fmt, True, original_format)
                     else:
                         run = p.add_run()
                         run.text = title_text
-                        self._apply_run_format(run, {}, template_fmt, True)
+                        self._apply_run_format(run, {}, template_fmt, True, original_format)
                 else:
                     tf.text = title_text
                 return
@@ -1611,11 +1683,11 @@ class ContentReplayer:
                     if p.runs:
                         run = p.runs[0]
                         run.text = title_text
-                        self._apply_run_format(run, {}, template_fmt, True)
+                        self._apply_run_format(run, {}, template_fmt, True, original_format)
                     else:
                         run = p.add_run()
                         run.text = title_text
-                        self._apply_run_format(run, {}, template_fmt, True)
+                        self._apply_run_format(run, {}, template_fmt, True, original_format)
                 else:
                     tf.text = title_text
                 return
@@ -1636,17 +1708,17 @@ class ContentReplayer:
                         if p.runs:
                             run = p.runs[0]
                             run.text = title_text
-                            self._apply_run_format(run, {}, template_fmt, True)
+                            self._apply_run_format(run, {}, template_fmt, True, original_format)
                         else:
                             run = p.add_run()
                             run.text = title_text
-                            self._apply_run_format(run, {}, template_fmt, True)
+                            self._apply_run_format(run, {}, template_fmt, True, original_format)
                     return
             except Exception:
                 continue
 
     def _fill_body_into_placeholder(self, slide, text_blocks: list, body_placeholder=None) -> None:
-        """将正文填入模板的正文占位符，保留模板原有样式
+        """将正文填入模板的正文占位符：模板格式优先，原格式兜底
         
         如果指定了 body_placeholder，则填入该占位符；
         否则使用 _find_body_placeholder 查找。
@@ -1661,13 +1733,9 @@ class ContentReplayer:
             template_fmt = self.template_formats.get("body", {})
             
             # 清空现有内容（但保留第一段的样式）
-            # 先获取第一段的样式参考
-            ref_para = tf.paragraphs[0] if tf.paragraphs else None
-            
-            # 用clear清空所有段落，然后重新添加
             tf.clear()
             
-            # 填入新内容，每段应用模板格式
+            # 填入新内容，每段应用模板格式 + 原格式兜底
             first = True
             for block in text_blocks:
                 if first:
@@ -1677,13 +1745,18 @@ class ContentReplayer:
                     p = tf.add_paragraph()
                 p.text = block.text
                 p.level = block.level
-                if template_fmt:
-                    self._apply_template_format_to_paragraph(p, template_fmt)
+                
+                # 获取该block的原始格式信息
+                original_format = block.text_format if hasattr(block, 'text_format') else None
+                
+                # 应用格式：模板格式优先，原格式兜底
+                if template_fmt or original_format:
+                    self._apply_template_format_to_paragraph(p, template_fmt, original_format)
         except Exception:
             pass
 
     def _add_extra_text_shape(self, slide, shape_data: dict) -> None:
-        """添加额外的文本框：位置适配，样式用模板正文样式
+        """添加额外的文本框：位置适配，模板格式优先，原格式兜底
         
         Color Pairing 规则：
         - 装饰形状（竖杆、小色块）：用模板强调色（浅色背景→深绿，深色背景→白色）
@@ -1758,7 +1831,19 @@ class ContentReplayer:
                     for run_data in runs:
                         run = p.add_run()
                         run.text = run_data.get("text", "")
-                        self._apply_run_format(run, run_data, template_fmt, is_title)
+                        # 从run_data中提取原格式信息
+                        original_format = None
+                        if run_data:
+                            from core.models import TextFormat
+                            original_format = TextFormat(
+                                font_name=run_data.get("font_name"),
+                                font_size=run_data.get("font_size").pt if run_data.get("font_size") else None,
+                                font_color=run_data.get("color"),
+                                bold=run_data.get("bold"),
+                                italic=run_data.get("italic"),
+                                underline=run_data.get("underline"),
+                            )
+                        self._apply_run_format(run, run_data, template_fmt, is_title, original_format)
                         # 应用 color pairing 的文字颜色（覆盖模板样式）
                         if text_color_override and run.text.strip():
                             try:
@@ -1781,7 +1866,7 @@ class ContentReplayer:
             pass
 
     def _add_extra_autoshape(self, slide, shape_data: dict) -> None:
-        """添加额外的装饰形状：位置适配，颜色用模板配色
+        """添加额外的装饰形状：位置适配，模板格式优先，原格式兜底
         
         Color Pairing 规则：
         - 装饰形状（小、无文字）：用模板强调色
@@ -1819,7 +1904,7 @@ class ContentReplayer:
             fill_color = shape_data.get("fill_color")
             is_decoration = self._is_decoration_shape(shape_data)
             
-            # 确定背景色
+            # 确定背景色：保留原格式优先
             actual_bg_color = None
             if is_decoration:
                 # 装饰形状：用模板强调色
@@ -1857,7 +1942,7 @@ class ContentReplayer:
                     # 浅色背景下，内容框透明也没关系，文字是深色的
                     actual_bg_color = None
             
-            # 如果有文字，应用模板样式 + color pairing
+            # 如果有文字，应用模板样式 + 原格式兜底 + color pairing
             if shape_data.get("text") and shape.has_text_frame:
                 shape.text_frame.text = shape_data["text"]
                 template_fmt = self._get_template_format(False)
