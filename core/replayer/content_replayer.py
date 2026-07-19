@@ -205,17 +205,27 @@ class ContentReplayer:
                 self.default_text_color = extractor.get_text_color_for_master(
                     self.template_path, selected_master_index
                 )
-                self.title_text_color = self.default_text_color
-                # 同时更新template_formats中的颜色
+                
+                # 标题颜色：浅色背景(Master 0/1)用dark green background 2，深色背景(Master 2/3)用白色
+                colors = extractor.extract_theme_colors(self.template_path)
+                if selected_master_index in (0, 1):
+                    # 白色和浅绿模板：标题用 dark green background 2
+                    self.title_text_color = colors.get("dk2", "3DCD58")
+                else:
+                    # 渐变和深绿模板：标题用白色
+                    self.title_text_color = colors.get("lt1", "FFFFFF")
+                
+                # 更新template_formats中的颜色
                 if self.default_text_color:
                     if "body" not in self.template_formats:
                         self.template_formats["body"] = {}
                     if not self.template_formats["body"].get("color"):
                         self.template_formats["body"]["color"] = self.default_text_color
+                if self.title_text_color:
                     if "title" not in self.template_formats:
                         self.template_formats["title"] = {}
-                    if not self.template_formats["title"].get("color"):
-                        self.template_formats["title"]["color"] = self.title_text_color
+                    self.template_formats["title"]["color"] = self.title_text_color
+                
                 # 更新主题字体（使用对应Master的主题）
                 self.theme_fonts = extractor.extract_theme_fonts(
                     self.template_path, selected_master_index
@@ -389,20 +399,18 @@ class ContentReplayer:
                     text = footer_info.get("text", "")
                     if text:
                         textbox.text_frame.text = text
-                        # 应用字体样式
+                        # 应用字体样式：所有页脚文本强制使用 Poppins 6号字
                         try:
-                            font_name = footer_info.get("font_name")
-                            font_size = footer_info.get("font_size")
+                            font_name = "Poppins"
+                            font_size = Pt(6)
                             font_bold = footer_info.get("font_bold")
                             font_color = footer_info.get("font_color")
                             
                             para = textbox.text_frame.paragraphs[0]
                             if para.runs:
                                 run = para.runs[0]
-                                if font_name:
-                                    run.font.name = font_name
-                                if font_size:
-                                    run.font.size = font_size
+                                run.font.name = font_name
+                                run.font.size = font_size
                                 if font_bold is not None:
                                     run.font.bold = font_bold
                                 if font_color:
