@@ -26,9 +26,22 @@ class PptxExtractor:
 
     def _extract_slide(self, slide, slide_index: int) -> SlideContentModel:
         title = None
+        title_source = {}
         body_blocks = []
         notes_text = None
         raw_shapes = []
+        layout_features = {
+            "has_title": False,
+            "has_subtitle": False,
+            "has_table": False,
+            "has_image": False,
+            "has_chart": False,
+            "columns": 1,
+            "text_density": 0.0,
+            "shape_count": 0,
+            "placeholder_count": 0,
+            "has_multi_body": False,
+        }
 
         try:
             if slide.has_notes_slide:
@@ -37,6 +50,7 @@ class PptxExtractor:
             pass
 
         slide_height = slide.part.package.presentation_part.presentation.slide_height
+        slide_width = slide.part.package.presentation_part.presentation.slide_width
         # 页眉区域：顶部8%
         header_threshold = slide_height * 0.08
         # 页脚区域：底部12%
@@ -64,7 +78,43 @@ class PptxExtractor:
             except Exception:
                 return False
 
+        def _infer_semantic_role(shape, slide_width: int) -> str:
+            """根据形状的占位符类型和位置推断语义角色"""
+            try:
+                if shape.is_placeholder:
+                    ph_type = shape.placeholder_format.type
+                    ph_idx = shape.placeholder_format.idx
+                    # 1=title, 3=ctrTitle
+                    if ph_type in (1, 3):
+                        return "title"
+                    # 4=subtitle
+                    if ph_type == 4:
+                        return "subtitle"
+                    # 2=body, 7=text
+                    if ph_type in (2, 7):
+                        # 根据位置判断主正文还是侧边栏
+                        left = shape.left or 0
+                        if left > slide_width * 0.5:
+                            return "body_sidebar"
+                        return "body_main"
+                    # 其他占位符
+                    return "unknown"
+                
+                # 非占位符形状：根据位置和类型推断
+                top = shape.top or 0
+                if top < slide_height * 0.15:
+                    return "title"
+                return "body_main"
+            except Exception:
+                return "unknown"
+
+        # 统计正文占位符数量
+        body_placeholder_count = 0
+        text_shapes_positions = []
+
         for shape in slide.shapes:
+            layout_features["shape_count"] += 1
+            
             # 跳过页眉/页脚区域的形状（不抽取原PPT的页眉页脚，完全继承模板的）
             if _is_header_or_footer(shape):
                 continue
@@ -73,12 +123,36 @@ class PptxExtractor:
             if shape_data:
                 raw_shapes.append(shape_data)
 
+            # 统计占位符
+            if shape.is_placeholder:
+                layout_features["placeholder_count"] += 1
+                try:
+                    ph_type = shape.placeholder_format.type
+                    if ph_type in (2, 7):
+                        body_placeholder_count += 1
+                        text_shapes_positions.append(shape.left or 0)
+                except Exception:
+                    pass
+
             if shape == slide.shapes.title:
                 title_text = self._get_shape_text(shape)
                 if title_text:
                     watermark_report = self.watermark_detector.detect_text(title_text, slide_index)
                     if not watermark_report.detected:
                         title = title_text
+                        layout_features["has_title"] = True
+                        # 记录标题来源占位符信息
+                        try:
+                            title_source = {
+                                "placeholder_type": shape.placeholder_format.type,
+                                "placeholder_idx": shape.placeholder_format.idx,
+                                "left": shape.left,
+                                "top": shape.top,
+                                "width": shape.width,
+                                "height": shape.height,
+                            }
+                        except Exception:
+                            title_source = {}
                 continue
 
             if shape.has_text_frame:
@@ -91,24 +165,34 @@ class PptxExtractor:
                             continue
                     except Exception:
                         pass
-                blocks = self._extract_text_blocks(shape, slide_index)
+                
+                # 推断语义角色
+                semantic_role = _infer_semantic_role(shape, slide_width)
+                if semantic_role == "subtitle":
+                    layout_features["has_subtitle"] = True
+                
+                blocks = self._extract_text_blocks(shape, slide_index, semantic_role, shape)
                 body_blocks.extend(blocks)
                 continue
 
             if shape.has_table:
                 table_data = self._extract_table_full(shape.table)
                 if table_data:
+                    layout_features["has_table"] = True
                     body_blocks.append(ContentBlock(
                         type="table",
                         text=None,
                         content=table_data,
-                        level=0
+                        level=0,
+                        semantic_role="body_main",
+                        source_shape_id=id(shape),
                     ))
                 continue
 
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                 try:
                     image = shape.image
+                    layout_features["has_image"] = True
                     body_blocks.append(ContentBlock(
                         type="image",
                         text=None,
@@ -120,7 +204,9 @@ class PptxExtractor:
                             "width": shape.width,
                             "height": shape.height,
                         },
-                        level=0
+                        level=0,
+                        semantic_role="body_main",
+                        source_shape_id=id(shape),
                     ))
                 except Exception:
                     pass
@@ -131,6 +217,24 @@ class PptxExtractor:
                 body_blocks.extend(blocks)
                 continue
 
+        # 分析布局特征
+        if body_placeholder_count > 1:
+            layout_features["has_multi_body"] = True
+            # 根据位置分布判断列数
+            if len(text_shapes_positions) >= 2:
+                text_shapes_positions.sort()
+                # 如果有两个文本框，一个在左半部分，一个在右半部分，则为两列布局
+                mid_point = slide_width / 2
+                left_count = sum(1 for p in text_shapes_positions if p < mid_point)
+                right_count = sum(1 for p in text_shapes_positions if p >= mid_point)
+                if left_count > 0 and right_count > 0:
+                    layout_features["columns"] = 2
+        
+        # 计算文本密度（文本形状数量 / 总形状数量）
+        if layout_features["shape_count"] > 0:
+            text_shape_count = sum(1 for b in body_blocks if b.type == "paragraph")
+            layout_features["text_density"] = text_shape_count / layout_features["shape_count"]
+
         return SlideContentModel(
             slide_index=slide_index,
             title=title,
@@ -138,6 +242,8 @@ class PptxExtractor:
             notes=notes_text,
             original_layout_type=self._detect_layout_type(slide, slide_index),
             raw_shapes=raw_shapes,
+            layout_features=layout_features,
+            title_source=title_source,
         )
 
     def _extract_shape(self, shape, slide_index: int) -> dict | None:
@@ -590,9 +696,20 @@ class PptxExtractor:
         except Exception:
             return None
 
-    def _extract_text_blocks(self, shape, slide_index: int) -> list[ContentBlock]:
+    def _extract_text_blocks(self, shape, slide_index: int, semantic_role: str = "unknown", source_shape=None) -> list[ContentBlock]:
         blocks = []
         tf = shape.text_frame
+
+        # 记录占位符信息
+        ph_type = None
+        ph_idx = None
+        shape_id = id(source_shape) if source_shape else id(shape)
+        if source_shape and source_shape.is_placeholder:
+            try:
+                ph_type = source_shape.placeholder_format.type
+                ph_idx = source_shape.placeholder_format.idx
+            except Exception:
+                pass
 
         for paragraph in tf.paragraphs:
             text = paragraph.text.strip()
@@ -606,7 +723,11 @@ class PptxExtractor:
             blocks.append(ContentBlock(
                 type="paragraph",
                 text=text,
-                level=paragraph.level or 0
+                level=paragraph.level or 0,
+                semantic_role=semantic_role,
+                original_placeholder_type=ph_type,
+                original_placeholder_idx=ph_idx,
+                source_shape_id=shape_id,
             ))
         return blocks
 

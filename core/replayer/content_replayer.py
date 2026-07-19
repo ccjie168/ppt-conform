@@ -26,6 +26,7 @@ class ContentReplayer:
         self.background_image: dict | None = None
         self.background_color: str | None = None
         self.background_theme_color: str | None = None
+        self.placeholder_mapping: dict = {}  # 模板占位符语义映射
 
         if template_path and Path(template_path).exists():
             extractor = TemplateFormatExtractor()
@@ -256,6 +257,11 @@ class ContentReplayer:
                 )
                 # 重新分析所选Master的footer元素
                 self._analyze_template_footer(self.template_path, selected_master_index)
+                
+                # 提取所选Master的占位符语义映射
+                self.placeholder_mapping = extractor.extract_placeholder_mapping(
+                    self.template_path, selected_master_index
+                )
             except Exception:
                 pass
 
@@ -521,35 +527,97 @@ class ContentReplayer:
         """将内容回填到模板slide中，所有样式遵循模板
         
         核心原则：
-        1. 标题填入模板的title占位符（保留模板样式）
-        2. 正文填入模板的body占位符（保留模板样式）
-        3. 额外元素（图片、表格、装饰形状）按位置适配，样式用模板配色
+        1. 根据内容的 semantic_role 匹配模板占位符
+        2. 标题填入模板的title占位符（保留模板样式）
+        3. 主正文填入模板的body_main占位符（保留模板样式）
+        4. 侧边栏内容填入模板的body_sidebar占位符
+        5. 额外元素（图片、表格、装饰形状）按位置适配，样式用模板配色
         """
         # 1. 填入标题（使用模板标题占位符的样式）
         if model.title:
-            self._fill_title_into_placeholder(slide, model.title)
+            title_placeholder = self._find_placeholder_by_role(slide, "title")
+            if title_placeholder:
+                self._fill_title_into_placeholder(slide, model.title, title_placeholder)
+            else:
+                # 备用：使用 slide.shapes.title
+                self._fill_title_into_placeholder(slide, model.title)
         
-        # 2. 填入正文文本（使用模板正文占位符的样式）
-        text_blocks = [b for b in model.body_blocks if b.type == "paragraph" and b.text]
-        if text_blocks:
-            self._fill_body_into_placeholder(slide, text_blocks)
+        # 2. 根据语义角色分组正文内容
+        body_main_blocks = []
+        body_sidebar_blocks = []
+        subtitle_blocks = []
+        other_blocks = []
         
-        # 3. 处理额外元素（图片、表格等），位置按比例适配，样式用模板配色
         for block in model.body_blocks:
+            if block.type == "paragraph" and block.text:
+                if block.semantic_role == "subtitle":
+                    subtitle_blocks.append(block)
+                elif block.semantic_role == "body_sidebar":
+                    body_sidebar_blocks.append(block)
+                elif block.semantic_role in ("body_main", "title", "unknown"):
+                    body_main_blocks.append(block)
+                else:
+                    body_main_blocks.append(block)
+            else:
+                other_blocks.append(block)
+        
+        # 3. 填入副标题（如果有）
+        if subtitle_blocks:
+            subtitle_placeholder = self._find_placeholder_by_role(slide, "subtitle")
+            if subtitle_placeholder:
+                self._fill_body_into_placeholder(slide, subtitle_blocks, subtitle_placeholder)
+        
+        # 4. 填入主正文（使用模板正文占位符的样式）
+        if body_main_blocks:
+            body_placeholder = self._find_placeholder_by_role(slide, "body_main")
+            if body_placeholder:
+                self._fill_body_into_placeholder(slide, body_main_blocks, body_placeholder)
+            else:
+                # 备用：使用原来的查找逻辑
+                self._fill_body_into_placeholder(slide, body_main_blocks)
+        
+        # 5. 填入侧边栏内容（如果有对应的占位符）
+        if body_sidebar_blocks:
+            sidebar_placeholder = self._find_placeholder_by_role(slide, "body_sidebar")
+            if sidebar_placeholder:
+                self._fill_body_into_placeholder(slide, body_sidebar_blocks, sidebar_placeholder)
+            else:
+                # 没有侧边栏占位符，合并到主正文
+                if body_main_blocks:
+                    # 主正文已有内容，侧边栏内容作为额外文本框
+                    for block in body_sidebar_blocks:
+                        self._add_extra_text_shape(slide, {
+                            "type": "text",
+                            "left": Emu(914400 * 7),
+                            "top": Emu(914400 * 3),
+                            "width": Emu(914400 * 4),
+                            "height": Emu(914400 * 4),
+                            "paragraphs": [{"text": block.text, "level": block.level, "runs": [{"text": block.text}]}],
+                            "shape_name": "Sidebar Text",
+                            "fill_color": None,
+                            "line_color": None,
+                            "line_width": None,
+                        })
+                else:
+                    # 主正文没有内容，侧边栏内容填入主正文占位符
+                    body_placeholder = self._find_placeholder_by_role(slide, "body_main")
+                    if body_placeholder:
+                        self._fill_body_into_placeholder(slide, body_sidebar_blocks, body_placeholder)
+        
+        # 6. 处理额外元素（图片、表格等），位置按比例适配，样式用模板配色
+        for block in other_blocks:
             if block.type == "image":
                 self._add_image_from_block(slide, block.content)
             elif block.type == "table":
                 self._add_table_from_block(slide, block.content)
         
-        # 4. 处理额外的自选图形（装饰性元素），样式用模板配色
+        # 7. 处理额外的自选图形（装饰性元素），样式用模板配色
         if model.raw_shapes:
             # 收集所有已经被占位符处理的文本，避免重复
-            # 标题文本
             title_text = (model.title or "").strip()
-            # 正文文本（合并所有paragraph block）
             body_text = ""
-            for block in model.body_blocks:
-                if block.type == "paragraph" and block.text:
+            for block in body_main_blocks + body_sidebar_blocks + subtitle_blocks:
+                if block.text:
                     body_text += block.text.strip() + "\n"
             body_text = body_text.strip()
             
@@ -570,14 +638,11 @@ class ContentReplayer:
                         continue
                     
                     # 跳过正文文本框（正文包含该文本，或该文本包含正文）
-                    # 因为正文可能被拆分成多个paragraph，这里用归一化后比较
                     if body_text and shape_text:
-                        # 归一化：去掉空白和换行后比较
                         norm_shape = shape_text.replace(" ", "").replace("\n", "")
                         norm_body = body_text.replace(" ", "").replace("\n", "")
                         if norm_shape == norm_body:
                             continue
-                        # 如果形状文本是正文的子集，也跳过
                         if len(norm_shape) > 10 and norm_shape in norm_body:
                             continue
                 
@@ -586,14 +651,71 @@ class ContentReplayer:
                     continue
                 
                 if shape_type == "text":
-                    # 额外文本框：位置适配，字体用模板的正文字体，颜色用模板的正文颜色
                     self._add_extra_text_shape(slide, shape_data)
                 elif shape_type == "autoshape":
-                    # 装饰形状：位置适配，颜色用模板的强调色
                     self._add_extra_autoshape(slide, shape_data)
                 elif shape_type == "image":
-                    # 额外图片：位置适配
                     self._add_image_shape(slide, shape_data)
+
+    def _find_placeholder_by_role(self, slide, role: str) -> object | None:
+        """根据语义角色查找模板占位符
+        
+        优先根据 placeholder_mapping 中的类型和索引匹配，
+        如果找不到则根据占位符类型回退匹配。
+        """
+        if not self.placeholder_mapping:
+            # 没有映射表，使用回退逻辑
+            if role == "title":
+                return slide.shapes.title
+            elif role in ("body_main", "body_sidebar"):
+                return self._find_body_placeholder(slide)
+            elif role == "subtitle":
+                for shape in slide.placeholders:
+                    try:
+                        if shape.placeholder_format.type == 4:
+                            return shape
+                    except Exception:
+                        continue
+            return None
+        
+        # 获取该角色对应的占位符信息
+        ph_info = self.placeholder_mapping.get(role)
+        if not ph_info:
+            # 角色没有对应的占位符信息，使用回退逻辑
+            if role == "title":
+                return slide.shapes.title
+            elif role in ("body_main", "body_sidebar"):
+                return self._find_body_placeholder(slide)
+            return None
+        
+        target_type = ph_info.get("placeholder_type")
+        target_idx = ph_info.get("placeholder_idx")
+        
+        # 第一优先级：类型和索引都匹配
+        for shape in slide.placeholders:
+            try:
+                phf = shape.placeholder_format
+                if phf.type == target_type and phf.idx == target_idx:
+                    return shape
+            except Exception:
+                continue
+        
+        # 第二优先级：类型匹配
+        for shape in slide.placeholders:
+            try:
+                phf = shape.placeholder_format
+                if phf.type == target_type:
+                    return shape
+            except Exception:
+                continue
+        
+        # 第三优先级：角色回退
+        if role == "title":
+            return slide.shapes.title
+        elif role in ("body_main", "body_sidebar", "subtitle"):
+            return self._find_body_placeholder(slide)
+        
+        return None
 
     def _fill_simple_content(self, slide, model: SlideContentModel) -> None:
         if model.title:
@@ -1303,19 +1425,41 @@ class ContentReplayer:
         except Exception:
             pass
 
-    def _fill_title_into_placeholder(self, slide, title_text: str) -> None:
-        """将标题填入模板的标题占位符，并应用模板的标题样式"""
+    def _fill_title_into_placeholder(self, slide, title_text: str, title_placeholder=None) -> None:
+        """将标题填入模板的标题占位符，并应用模板的标题样式
+        
+        如果指定了 title_placeholder，则填入该占位符；
+        否则查找 slide.shapes.title 或第一个标题占位符。
+        """
         try:
-            if slide.shapes.title is not None:
-                tf = slide.shapes.title.text_frame
-                # 应用模板标题格式
+            # 优先使用传入的占位符
+            if title_placeholder is not None:
+                tf = title_placeholder.text_frame
                 template_fmt = self._get_template_format(True)
                 if tf.paragraphs:
                     p = tf.paragraphs[0]
-                    # 清空原有run
                     for run in p.runs:
                         run.text = ""
-                    # 添加新run并设置内容和样式
+                    if p.runs:
+                        run = p.runs[0]
+                        run.text = title_text
+                        self._apply_run_format(run, {}, template_fmt, True)
+                    else:
+                        run = p.add_run()
+                        run.text = title_text
+                        self._apply_run_format(run, {}, template_fmt, True)
+                else:
+                    tf.text = title_text
+                return
+            
+            # 备用：使用 slide.shapes.title
+            if slide.shapes.title is not None:
+                tf = slide.shapes.title.text_frame
+                template_fmt = self._get_template_format(True)
+                if tf.paragraphs:
+                    p = tf.paragraphs[0]
+                    for run in p.runs:
+                        run.text = ""
                     if p.runs:
                         run = p.runs[0]
                         run.text = title_text
@@ -1353,9 +1497,14 @@ class ContentReplayer:
             except Exception:
                 continue
 
-    def _fill_body_into_placeholder(self, slide, text_blocks: list) -> None:
-        """将正文填入模板的正文占位符，保留模板原有样式"""
-        body_placeholder = self._find_body_placeholder(slide)
+    def _fill_body_into_placeholder(self, slide, text_blocks: list, body_placeholder=None) -> None:
+        """将正文填入模板的正文占位符，保留模板原有样式
+        
+        如果指定了 body_placeholder，则填入该占位符；
+        否则使用 _find_body_placeholder 查找。
+        """
+        if not body_placeholder:
+            body_placeholder = self._find_body_placeholder(slide)
         if not body_placeholder:
             return
         
@@ -1756,8 +1905,34 @@ class ContentReplayer:
                 pass
 
     def _determine_layout(self, model: SlideContentModel) -> str:
+        """根据内容模型和布局特征确定布局类型
+        
+        优先级：
+        1. original_layout_type（如果已检测）
+        2. layout_features 中的特征
+        3. 默认根据 slide_index 判断
+        """
+        # 优先使用原始布局类型
         if model.original_layout_type:
             return model.original_layout_type
+        
+        # 根据布局特征判断
+        features = model.layout_features or {}
+        
+        # 两列布局
+        if features.get("columns", 1) >= 2:
+            return "two_column"
+        
+        # 表格布局
+        if features.get("has_table"):
+            return "table"
+        
+        # 图片布局
+        if features.get("has_image") and not features.get("has_title"):
+            return "image"
+        
+        # 封面页（第一页且有标题）
         if model.slide_index == 0:
             return "cover"
+        
         return "content"

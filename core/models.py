@@ -29,6 +29,17 @@ class ContentBlock(BaseModel):
     text: str | None = None
     level: int = 0
     content: Any | None = None
+    # 语义角色：标记内容在幻灯片中的结构角色，用于回填时匹配模板占位符
+    semantic_role: Literal[
+        "title", "subtitle", "body_main", "body_sidebar",
+        "footer", "decoration", "caption", "unknown"
+    ] = "unknown"
+    # 原PPT中该内容来自的占位符类型（1=title, 2=body, 4=subtitle, 7=text, 等）
+    original_placeholder_type: int | None = None
+    # 原PPT中该内容来自的占位符索引
+    original_placeholder_idx: int | None = None
+    # 来源形状ID，用于建立内容与结构的映射关系
+    source_shape_id: int | None = None
 
 
 class SlideContentModel(BaseModel):
@@ -43,6 +54,10 @@ class SlideContentModel(BaseModel):
     extra_tables: list[dict] = []
     extra_text_shapes: list[dict] = []
     extra_autoshapes: list[dict] = []
+    # 布局特征：记录原PPT的布局结构特征，用于回填时选择模板布局
+    layout_features: dict = {}
+    # 标题的来源占位符信息（用于回填时匹配模板占位符）
+    title_source: dict = {}
 
 
 class MasterStyle(BaseModel):

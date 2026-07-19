@@ -253,6 +253,97 @@ class TemplateFormatExtractor:
             pass
         return None
 
+    def extract_placeholder_mapping(self, template_path: str, master_index: int = 0) -> dict:
+        """提取模板中占位符的语义映射表
+        
+        返回结构:
+        {
+            "title": {"placeholder_type": 1, "placeholder_idx": 0, "name": "Title 1", "left": ..., "top": ...},
+            "body_main": {"placeholder_type": 2, "placeholder_idx": 1, "name": "Content Placeholder 2", ...},
+            "body_sidebar": {"placeholder_type": 7, "placeholder_idx": 2, "name": "Content Placeholder 3", ...},
+            "subtitle": {"placeholder_type": 4, "placeholder_idx": 1, "name": "Subtitle 2", ...},
+        }
+        
+        该映射表用于回填时根据内容的 semantic_role 匹配模板占位符
+        """
+        prs = Presentation(template_path)
+        mapping = {}
+        
+        if not prs.slide_masters or master_index >= len(prs.slide_masters):
+            return mapping
+        
+        master = prs.slide_masters[master_index]
+        slide_width = prs.slide_width
+        
+        # 收集所有正文占位符（用于区分主正文和侧边栏）
+        body_placeholders = []
+        
+        # 从Master的Layouts中提取占位符
+        for layout in master.slide_layouts:
+            for shape in layout.placeholders:
+                try:
+                    phf = shape.placeholder_format
+                    ph_type = phf.type
+                    ph_idx = phf.idx
+                    
+                    # 1=title, 3=ctrTitle
+                    if ph_type in (1, 3):
+                        mapping.setdefault("title", {
+                            "placeholder_type": ph_type,
+                            "placeholder_idx": ph_idx,
+                            "name": shape.name,
+                            "left": shape.left,
+                            "top": shape.top,
+                            "width": shape.width,
+                            "height": shape.height,
+                        })
+                    # 4=subtitle
+                    elif ph_type == 4:
+                        mapping.setdefault("subtitle", {
+                            "placeholder_type": ph_type,
+                            "placeholder_idx": ph_idx,
+                            "name": shape.name,
+                            "left": shape.left,
+                            "top": shape.top,
+                            "width": shape.width,
+                            "height": shape.height,
+                        })
+                    # 2=body, 7=text, 8=content, 9=object
+                    elif ph_type in (2, 7, 8, 9, 10):
+                        body_placeholders.append({
+                            "placeholder_type": ph_type,
+                            "placeholder_idx": ph_idx,
+                            "name": shape.name,
+                            "left": shape.left or 0,
+                            "top": shape.top or 0,
+                            "width": shape.width or 0,
+                            "height": shape.height or 0,
+                        })
+                except Exception:
+                    continue
+        
+        # 区分主正文和侧边栏
+        if len(body_placeholders) == 1:
+            mapping["body_main"] = body_placeholders[0]
+        elif len(body_placeholders) >= 2:
+            # 根据位置排序：左边的为主正文，右边的为侧边栏
+            body_placeholders.sort(key=lambda x: x["left"])
+            mapping["body_main"] = body_placeholders[0]
+            mapping["body_sidebar"] = body_placeholders[1]
+        # 如果没有body占位符，使用第一个非标题占位符
+        if "body_main" not in mapping:
+            mapping["body_main"] = {
+                "placeholder_type": 2,
+                "placeholder_idx": 1,
+                "name": "Content Placeholder 2",
+                "left": None,
+                "top": None,
+                "width": None,
+                "height": None,
+            }
+        
+        return mapping
+
     def _is_dark_color(self, hex_color: str) -> bool:
         """判断颜色是否为深色（基于亮度）"""
         try:
