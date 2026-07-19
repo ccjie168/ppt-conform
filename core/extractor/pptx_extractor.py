@@ -36,6 +36,8 @@ class PptxExtractor:
         # 用于建立 ContentBlock 与 raw_shape 的精确映射
         shape_id_map = {}
         next_shape_id = 0
+        body_placeholder_count = 0
+        text_shapes_positions = []
         layout_features = {
             "has_title": False,
             "has_subtitle": False,
@@ -113,10 +115,6 @@ class PptxExtractor:
                 return "body_main"
             except Exception:
                 return "unknown"
-
-        # 统计正文占位符数量
-        body_placeholder_count = 0
-        text_shapes_positions = []
 
         for shape in slide.shapes:
             layout_features["shape_count"] += 1
@@ -261,16 +259,26 @@ class PptxExtractor:
             text_shape_count = sum(1 for b in body_blocks if b.type == "paragraph")
             layout_features["text_density"] = text_shape_count / layout_features["shape_count"]
 
+        # 最终防御：用 locals() 确保所有变量都已绑定，避免 UnboundLocalError
+        _locals = locals()
+        _title = _locals.get("title")
+        _title_source = _locals.get("title_source", {})
+        _title_format = _locals.get("title_format")
+        _body_blocks = _locals.get("body_blocks", [])
+        _notes_text = _locals.get("notes_text")
+        _raw_shapes = _locals.get("raw_shapes", [])
+        _layout_features = _locals.get("layout_features", {})
+
         return SlideContentModel(
             slide_index=slide_index,
-            title=title,
-            body_blocks=body_blocks,
-            notes=notes_text,
+            title=_title,
+            body_blocks=_body_blocks,
+            notes=_notes_text,
             original_layout_type=self._detect_layout_type(slide, slide_index),
-            raw_shapes=raw_shapes,
-            layout_features=layout_features,
-            title_source=title_source,
-            title_format=title_format,
+            raw_shapes=_raw_shapes,
+            layout_features=_layout_features,
+            title_source=_title_source,
+            title_format=_title_format,
         )
 
     def _extract_shape(self, shape, slide_index: int) -> dict | None:
