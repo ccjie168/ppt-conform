@@ -40,6 +40,7 @@ class ContentReplayer:
     def _analyze_template_footer(self, template_path: str, master_index: int = 0) -> None:
         """分析指定Master中的footer元素（图标、页脚文本等）和背景信息，用于复制到新slide"""
         self.footer_shapes = []
+        self.master_brand_images = []
         self.background_image = None
         self.background_color = None
         self.background_theme_color = None
@@ -106,10 +107,18 @@ class ContentReplayer:
                         except Exception:
                             pass
 
-                    # 底部区域的图片（施耐德图标等）
+                    # 底部区域的图片（施耐德图标等）- 需要从母版删除，但保留在footer_shapes中以便重新添加
                     if shape_type == MSO_SHAPE_TYPE.PICTURE:
                         if shape.top and shape.top > footer_threshold:
                             is_footer = True
+                            # 记录母版中的品牌图片，后续需要删除
+                            self.master_brand_images.append({
+                                "name": shape.name,
+                                "left": shape.left,
+                                "top": shape.top,
+                                "width": shape.width,
+                                "height": shape.height,
+                            })
 
                     # 底部区域的文本框（页脚文本等）
                     if shape_type == MSO_SHAPE_TYPE.TEXT_BOX:
@@ -195,6 +204,82 @@ class ContentReplayer:
     WIDESCREEN_16_9 = Emu(12192000)
     WIDESCREEN_16_9_H = Emu(6858000)
 
+    def _remove_master_brand_images(self, prs) -> None:
+        """从母版中删除品牌图片，避免与代码添加的页脚图标重复"""
+        if not self.master_brand_images:
+            return
+
+        try:
+            for master in prs.slide_masters:
+                shapes_to_remove = []
+
+                for brand_img in self.master_brand_images:
+                    brand_name = brand_img.get("name", "")
+                    brand_left = brand_img.get("left")
+                    brand_top = brand_img.get("top")
+                    brand_width = brand_img.get("width")
+                    brand_height = brand_img.get("height")
+
+                    for shape in master.shapes:
+                        try:
+                            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                                if brand_name and shape.name == brand_name:
+                                    shapes_to_remove.append(shape)
+                                    break
+                                if (brand_left is not None and brand_top is not None and
+                                    brand_width is not None and brand_height is not None):
+                                    if (abs(shape.left - brand_left) < Emu(1000) and
+                                        abs(shape.top - brand_top) < Emu(1000) and
+                                        abs(shape.width - brand_width) < Emu(1000) and
+                                        abs(shape.height - brand_height) < Emu(1000)):
+                                        shapes_to_remove.append(shape)
+                                        break
+                        except Exception:
+                            continue
+
+                for shape in shapes_to_remove:
+                    try:
+                        sp = shape._element
+                        sp.getparent().remove(sp)
+                    except Exception:
+                        continue
+
+                # 同时检查所有幻灯片布局
+                for layout in master.slide_layouts:
+                    layout_shapes_to_remove = []
+                    for brand_img in self.master_brand_images:
+                        brand_name = brand_img.get("name", "")
+                        brand_left = brand_img.get("left")
+                        brand_top = brand_img.get("top")
+                        brand_width = brand_img.get("width")
+                        brand_height = brand_img.get("height")
+
+                        for shape in layout.shapes:
+                            try:
+                                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                                    if brand_name and shape.name == brand_name:
+                                        layout_shapes_to_remove.append(shape)
+                                        break
+                                    if (brand_left is not None and brand_top is not None and
+                                        brand_width is not None and brand_height is not None):
+                                        if (abs(shape.left - brand_left) < Emu(1000) and
+                                            abs(shape.top - brand_top) < Emu(1000) and
+                                            abs(shape.width - brand_width) < Emu(1000) and
+                                            abs(shape.height - brand_height) < Emu(1000)):
+                                            layout_shapes_to_remove.append(shape)
+                                            break
+                            except Exception:
+                                continue
+
+                    for shape in layout_shapes_to_remove:
+                        try:
+                            sp = shape._element
+                            sp.getparent().remove(sp)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
     def replay(self, content_models: list[SlideContentModel], config: UserConfig) -> str:
         if self.template_path and Path(self.template_path).exists():
             output_prs = Presentation(self.template_path)
@@ -266,6 +351,9 @@ class ContentReplayer:
                 )
                 # 重新分析所选Master的footer元素
                 self._analyze_template_footer(self.template_path, selected_master_index)
+                
+                # 从母版中删除品牌图片，避免与代码添加的页脚图标重复
+                self._remove_master_brand_images(output_prs)
                 
                 # 提取所选Master的占位符语义映射
                 self.placeholder_mapping = extractor.extract_placeholder_mapping(
