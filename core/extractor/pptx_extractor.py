@@ -284,6 +284,11 @@ class PptxExtractor:
             text_shape_count = sum(1 for b in body_blocks if b.type == "paragraph")
             layout_features["text_density"] = text_shape_count / layout_features["shape_count"]
 
+        # 过滤掉与text形状完全重叠且无文本的autoshape（这些是文本框的背景矩形）
+        # 问题：原PPT中可能有一个有填充色的矩形作为文本框的背景，两者完全重叠
+        # 转换后这个矩形会遮挡文本内容
+        raw_shapes = self._filter_overlapping_shapes(raw_shapes)
+
         # 最终防御：用 locals() 确保所有变量都已绑定，避免 UnboundLocalError
         _locals = locals()
         _title = _locals.get("title")
@@ -340,6 +345,72 @@ class PptxExtractor:
                 return self._extract_auto_shape(shape)
         except Exception:
             return None
+
+    def _filter_overlapping_shapes(self, raw_shapes: list[dict]) -> list[dict]:
+        """过滤掉与text形状完全重叠且无文本的autoshape
+        
+        问题：原PPT中可能有一个有填充色的矩形作为文本框的背景，两者完全重叠
+        转换后这个矩形会遮挡文本内容
+        
+        判断规则：
+        1. 找到所有text类型的形状
+        2. 找到所有autoshape类型的形状，且没有文本内容
+        3. 如果一个autoshape与一个text形状位置和大小完全相同，则移除该autoshape
+        """
+        if not raw_shapes:
+            return raw_shapes
+        
+        # 找出所有text形状的位置
+        text_shapes = []
+        for shape in raw_shapes:
+            if shape.get("type") == "text":
+                left = shape.get("left", 0)
+                top = shape.get("top", 0)
+                width = shape.get("width", 0)
+                height = shape.get("height", 0)
+                text_shapes.append((left, top, width, height))
+        
+        if not text_shapes:
+            return raw_shapes
+        
+        # 过滤掉与text形状重叠的autoshape
+        filtered = []
+        tolerance = 1000  # 容差，单位EMU
+        
+        for shape in raw_shapes:
+            shape_type = shape.get("type")
+            if shape_type == "autoshape":
+                # 检查是否有文本
+                has_text = False
+                paragraphs = shape.get("paragraphs", [])
+                for para in paragraphs:
+                    if para.get("text", "").strip():
+                        has_text = True
+                        break
+                
+                if not has_text:
+                    # 无文本的autoshape：检查是否与text形状重叠
+                    left = shape.get("left", 0)
+                    top = shape.get("top", 0)
+                    width = shape.get("width", 0)
+                    height = shape.get("height", 0)
+                    
+                    is_overlapping = False
+                    for t_left, t_top, t_width, t_height in text_shapes:
+                        if (abs(left - t_left) < tolerance and
+                            abs(top - t_top) < tolerance and
+                            abs(width - t_width) < tolerance and
+                            abs(height - t_height) < tolerance):
+                            is_overlapping = True
+                            break
+                    
+                    if is_overlapping:
+                        # 与text形状完全重叠，跳过这个autoshape
+                        continue
+            
+            filtered.append(shape)
+        
+        return filtered
 
     def _extract_text_shape(self, shape, slide_index: int) -> dict:
         paragraphs = []
