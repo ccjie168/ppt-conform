@@ -488,7 +488,14 @@ class ContentReplayer:
         shape_type = shape_data.get("type")
         try:
             if shape_type == "text":
-                self._add_text_shape(slide, shape_data, is_title=False)
+                # 判断是否是标题：位于页面顶部15%区域的文本
+                is_title = False
+                top = shape_data.get("top", 0)
+                height = shape_data.get("height", 0)
+                if top and self.target_height > 0:
+                    if top + height < self.target_height * 0.2:
+                        is_title = True
+                self._add_text_shape(slide, shape_data, is_title=is_title)
             elif shape_type == "image":
                 self._add_image_shape(slide, shape_data)
             elif shape_type == "table":
@@ -521,7 +528,11 @@ class ContentReplayer:
         if fill_color:
             try:
                 textbox.fill.solid()
-                textbox.fill.fore_color.rgb = RGBColor.from_string(fill_color)
+                # 深色背景模板：装饰性形状/文本框改为白色
+                if self.default_text_color == "FFFFFF":
+                    textbox.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
+                else:
+                    textbox.fill.fore_color.rgb = RGBColor.from_string(fill_color)
             except Exception:
                 pass
 
@@ -529,7 +540,11 @@ class ContentReplayer:
         line_width = shape_data.get("line_width")
         if line_color:
             try:
-                textbox.line.color.rgb = RGBColor.from_string(line_color)
+                # 深色背景模板：装饰性线条改为白色
+                if self.default_text_color == "FFFFFF":
+                    textbox.line.color.rgb = RGBColor.from_string("FFFFFF")
+                else:
+                    textbox.line.color.rgb = RGBColor.from_string(line_color)
                 if line_width:
                     textbox.line.width = line_width
             except Exception:
@@ -621,12 +636,18 @@ class ContentReplayer:
         if run_data.get("underline") is not None:
             font.underline = run_data["underline"]
 
-        # 颜色：标题使用模板要求的颜色，正文保留原颜色（无颜色时用默认）
-        color = run_data.get("color")
+        # 颜色：
+        # - 标题：强制使用模板要求的颜色
+        # - 正文：深色背景模板强制用默认颜色，浅色背景保留原颜色（无颜色时用默认）
         if is_title and template_fmt and template_fmt.get("color"):
             color = template_fmt["color"]
-        elif not color and self.default_text_color:
+        elif self.default_text_color == "FFFFFF" and self.default_text_color:
+            # 深色背景（白色文字）：所有文字都用白色，覆盖原颜色
             color = self.default_text_color
+        else:
+            color = run_data.get("color")
+            if not color and self.default_text_color:
+                color = self.default_text_color
         if color:
             try:
                 font.color.rgb = RGBColor.from_string(color)
@@ -1024,7 +1045,11 @@ class ContentReplayer:
             if fill_color:
                 try:
                     shape.fill.solid()
-                    shape.fill.fore_color.rgb = RGBColor.from_string(fill_color)
+                    # 深色背景模板：装饰性形状改为白色
+                    if self.default_text_color == "FFFFFF":
+                        shape.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
+                    else:
+                        shape.fill.fore_color.rgb = RGBColor.from_string(fill_color)
                 except Exception:
                     pass
 
@@ -1032,7 +1057,11 @@ class ContentReplayer:
             line_width = shape_data.get("line_width")
             if line_color:
                 try:
-                    shape.line.color.rgb = RGBColor.from_string(line_color)
+                    # 深色背景模板：装饰性线条改为白色
+                    if self.default_text_color == "FFFFFF":
+                        shape.line.color.rgb = RGBColor.from_string("FFFFFF")
+                    else:
+                        shape.line.color.rgb = RGBColor.from_string(line_color)
                     if line_width:
                         shape.line.width = line_width
                 except Exception:
