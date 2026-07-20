@@ -306,89 +306,98 @@ class StyleAdapter:
         bg_shape.zorder = 0
     
     def _adjust_text_colors(self, slide):
-        """根据文字位置调整颜色 - 直接在XML层面修改确保生效
+        """根据背景色深浅调整文字颜色 - Color Pairing
         
-        规则：
-        - 文字框压在浅色卡片上 → 保持深色（或根据卡片颜色调整）
-        - 文字框落在深色背景上 → 改为浅色
+        核心逻辑：
+        1. 判断当前幻灯片背景是深色还是浅色
+        2. 深色背景 → 所有文字改为浅色（白色/高亮）
+        3. 浅色背景 → 所有文字改为深色（黑色/深灰）
+        4. 确保所有层级的颜色一致
         """
-        if not self.text_color_rules:
-            return
+        # 判断背景色深浅
+        bg_is_dark = self._detect_background_darkness(slide)
         
-        # 先找出所有有填充色的形状（卡片）
-        cards = []
-        for shape in slide.shapes:
-            if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
-                fill_color = None
-                try:
-                    if shape.fill.type == 1:  # solid fill
-                        fill_color = str(shape.fill.fore_color.rgb).upper()
-                except:
-                    pass
-                
-                if fill_color and fill_color != "000000":
-                    left = shape.left or Emu(0)
-                    top = shape.top or Emu(0)
-                    width = shape.width or Emu(0)
-                    height = shape.height or Emu(0)
-                    cards.append({
-                        "left": left,
-                        "top": top,
-                        "right": left + width,
-                        "bottom": top + height,
-                        "fill_color": fill_color,
-                        "is_light": self._is_light_color(fill_color),
-                    })
+        # 根据背景色选择文字颜色
+        if bg_is_dark:
+            # 深色背景：使用浅色文字
+            text_color = self.text_color_rules.get("title_color", "FFFFFF")
+            body_color = self.text_color_rules.get("body_color", "E8F5E9")
+        else:
+            # 浅色背景：使用深色文字
+            text_color = "333333"
+            body_color = "555555"
         
-        # 判断文字框是否落在浅色卡片上
         for shape in slide.shapes:
             if not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
                 continue
             
-            text_left = shape.left or Emu(0)
-            text_top = shape.top or Emu(0)
-            text_width = shape.width or Emu(0)
-            text_height = shape.height or Emu(0)
-            text_center_x = text_left + text_width / 2
-            text_center_y = text_top + text_height / 2
-            
-            # 检查文字框中心是否落在某个浅色卡片上
-            on_light_card = False
-            for card in cards:
-                if (card["left"] < text_center_x < card["right"] and
-                    card["top"] < text_center_y < card["bottom"] and
-                    card["is_light"]):
-                    on_light_card = True
-                    break
-            
-            # 根据位置调整文字颜色
-            # 先设置shape级别的默认颜色
             tf = shape.text_frame
-            self._set_xml_font_color(tf._element, "FFFFFF" if not on_light_card else "333333")
+            
+            # 设置shape级别的默认颜色
+            self._set_xml_font_color(tf._element, body_color)
             
             for paragraph in tf.paragraphs:
                 # 修改paragraph级别的默认颜色
-                self._set_xml_font_color(paragraph._p, "FFFFFF" if not on_light_card else "333333")
+                self._set_xml_font_color(paragraph._p, body_color)
                 
                 for run in paragraph.runs:
                     if run.text.strip():
-                        if on_light_card:
-                            # 在浅色卡片上：保持深色
-                            target_color = "333333"
+                        # 判断是否是标题（字号大或加粗）
+                        font_size = run.font.size
+                        is_bold = run.font.bold
+                        if font_size and font_size >= Pt(24) or is_bold:
+                            target_color = text_color
                         else:
-                            # 在深色背景上：改为浅色
-                            # 判断是否是标题（字号大或加粗）
-                            font_size = run.font.size
-                            is_bold = run.font.bold
-                            if font_size and font_size >= Pt(24) or is_bold:
-                                target_color = self.text_color_rules["title_color"]
-                            else:
-                                target_color = self.text_color_rules["body_color"]
+                            target_color = body_color
                         
                         # 使用XML级别修改确保生效
                         self._set_xml_font_color(run._r, target_color)
                         # 同时用API修改
                         self._set_font_color(run.font, target_color)
+    
+    def _detect_background_darkness(self, slide) -> bool:
+        """检测幻灯片背景是否为深色
+        
+        返回True表示深色背景，False表示浅色背景
+        """
+        # 1. 检查slide.background
+        try:
+            if slide.background.fill.type == 1:  # solid
+                color = str(slide.background.fill.fore_color.rgb).upper()
+                return self._is_dark_color(color)
+        except:
+            pass
+        
+        # 2. 检查背景形状（铺满整页的形状）
+        for shape in slide.shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
+                left = shape.left or Emu(0)
+                top = shape.top or Emu(0)
+                width = shape.width or Emu(0)
+                height = shape.height or Emu(0)
+                
+                is_full_page = (
+                    left <= Emu(1000) and
+                    top <= Emu(1000) and
+                    width >= self.slide_width - Emu(2000) and
+                    height >= self.slide_height - Emu(2000)
+                )
+                
+                if is_full_page:
+                    try:
+                        if shape.fill.type == 1:  # solid
+                            color = str(shape.fill.fore_color.rgb).upper()
+                            return self._is_dark_color(color)
+                        elif shape.fill.type == 2:  # gradient
+                            # 取渐变中最深的颜色
+                            colors = [str(s.color.rgb).upper() for s in shape.fill.gradient.stops]
+                            dark_count = sum(1 for c in colors if self._is_dark_color(c))
+                            return dark_count >= len(colors) / 2
+                    except:
+                        pass
+        
+        # 3. 默认假设为深色背景（F3/F4）
+        return True
     
     def _apply_accent_colors(self, slide):
         """修改强调色（边框、装饰元素）"""
