@@ -3,6 +3,7 @@ from io import BytesIO
 from pptx import Presentation
 from pptx.util import Emu, Pt
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
 from pptx.oxml.ns import qn
 from core.models import SlideContentModel, UserConfig
@@ -51,7 +52,6 @@ class ContentReplayer:
         self.background_theme_color = None
         try:
             from pptx import Presentation
-            from pptx.enum.shapes import MSO_SHAPE_TYPE
             from lxml import etree
 
             prs = Presentation(template_path)
@@ -295,8 +295,6 @@ class ContentReplayer:
         target_height = prs.slide_height
 
         try:
-            from pptx.enum.shapes import MSO_SHAPE_TYPE
-
             for master in prs.slide_masters:
                 for shape in master.shapes:
                     try:
@@ -690,7 +688,6 @@ class ContentReplayer:
 
                 top = shape.top or Emu(0)
                 if top > footer_threshold:
-                    from pptx.enum.shapes import MSO_SHAPE_TYPE
                     if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
                         indices_to_remove.append(i)
             except Exception:
@@ -721,7 +718,6 @@ class ContentReplayer:
 
                     top = shape.top or Emu(0)
                     if top > footer_threshold:
-                        from pptx.enum.shapes import MSO_SHAPE_TYPE
                         if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
                             indices_to_remove.append(i)
                 except Exception:
@@ -743,7 +739,6 @@ class ContentReplayer:
         try:
             for footer_info in self.footer_shapes:
                 try:
-                    from pptx.enum.shapes import MSO_SHAPE_TYPE
                     from io import BytesIO
 
                     shape_type = footer_info.get("type")
@@ -961,7 +956,6 @@ class ContentReplayer:
             pass
         
         try:
-            from pptx.enum.shapes import MSO_SHAPE_TYPE
             for shape in slide.shapes:
                 if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
                     left = shape.left or Emu(0)
@@ -1140,7 +1134,6 @@ class ContentReplayer:
 
         for footer_info in self.footer_shapes:
             try:
-                from pptx.enum.shapes import MSO_SHAPE_TYPE
                 from io import BytesIO
 
                 shape_type = footer_info["type"]

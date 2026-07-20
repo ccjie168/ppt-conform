@@ -401,7 +401,6 @@ class StyleAdapter:
         colors = self.background_config.get("colors", ["#3DCD58", "#0A1929"])
         
         # 创建背景矩形
-        from pptx.enum.shapes import MSO_SHAPE_TYPE
         bg_shape = slide.shapes.add_shape(
             MSO_SHAPE_TYPE.AUTO_SHAPE,
             left=Emu(0),

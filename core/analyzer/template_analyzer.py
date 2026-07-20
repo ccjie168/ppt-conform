@@ -2,6 +2,7 @@
 from pathlib import Path
 from pptx import Presentation
 from pptx.util import Emu
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from lxml import etree
 from typing import Any, Dict
 
@@ -442,8 +443,6 @@ class TemplateAnalyzer:
     def _detect_shapes_background(self, master) -> dict | None:
         """检测Master中形状的背景填充（有些模板通过形状实现背景颜色）"""
         try:
-            from pptx.enum.shapes import MSO_SHAPE_TYPE
-
             slide_width = None
             slide_height = None
             try:
