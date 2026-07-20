@@ -85,13 +85,29 @@ def _check_template_aspect_ratio(template_file) -> tuple[bool, str, str]:
         return False, "", f"模板尺寸检查失败: {str(e)}"
 
 st.set_page_config(
-    page_title="PPT 标准模板转换智能体",
-    page_icon="📊",
+    page_title="施耐德 PPT 模板转换工具",
+    page_icon="⚡",
     layout="wide"
 )
 
-st.title("📊 PPT 标准模板转换智能体")
-st.markdown("将 Trae/豆包生成的 PPT 按照公司标准模板进行转换，自动去除水印，确保品牌一致性")
+def _load_css():
+    css_path = Path(__file__).parent / "static" / "schneider_style.css"
+    if css_path.exists():
+        with open(css_path, "r", encoding="utf-8") as f:
+            css = f.read()
+        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+
+_load_css()
+
+st.markdown("""
+<div class="schneider-header">
+    <div class="schneider-logo">SE<span>｜</span></div>
+    <div class="schneider-header-text">
+        <h1 style="margin:0;padding:0;font-size:24px;font-weight:700;color:#1A1A1A;">PPT 标准模板转换工具</h1>
+        <p style="margin:4px 0 0 0;color:#666666;font-size:13px;">Schneider Electric · 品牌一致性 · 技术适配模式</p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 
 def _is_light_color(hex_color: str) -> bool:
@@ -256,9 +272,8 @@ def _load_last_template():
 
 
 # ============ 全局模板上传（两个 tab 共用） ============
-st.markdown("## 🎨 上传公司标准模板（全局共享）")
-st.markdown("上传一次模板，下方「PPT 转换」和「模板分析」两个页签将共用此模板，无需重复上传。")
-st.markdown("应用会自动记住上次使用的模板，下次打开页面时直接使用。")
+st.markdown('<div class="section-title"><h2>上传公司标准模板（全局共享）</h2></div>', unsafe_allow_html=True)
+st.markdown("上传一次模板，下方「PPT 转换」和「模板分析」两个页签将共用此模板，无需重复上传。应用会自动记住上次使用的模板，下次打开页面时直接使用。")
 
 col_upload, col_reload = st.columns([3, 1])
 
@@ -333,7 +348,7 @@ if auto_load_done and global_template:
 
 st.markdown("---")
 
-tab1, tab2 = st.tabs(["🔄 PPT 转换", "🔍 模板分析"])
+tab1, tab2 = st.tabs(["  🔄 PPT 转换  ", "  🔍 模板分析  "])
 
 
 # ============ Tab 1: PPT 转换 ============
@@ -341,7 +356,7 @@ with tab1:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("📁 上传待转换的 PPT")
+        st.markdown('<div class="section-title"><h3>上传待转换的 PPT</h3></div>', unsafe_allow_html=True)
         uploaded_file = st.file_uploader("选择要转换的 PPT 文件", type=["pptx"], key="input_ppt")
 
         template_info = st.session_state.get("_template_file")
@@ -351,7 +366,7 @@ with tab1:
             st.warning("⚠️ 请先在页面上方上传公司标准模板")
 
     with col2:
-        st.subheader("⚙️ 转换配置")
+        st.markdown('<div class="section-title"><h3>转换配置</h3></div>', unsafe_allow_html=True)
 
         master_options = []
         template_analysis = st.session_state.get("_template_analysis")
@@ -375,8 +390,8 @@ with tab1:
                 })
 
         if master_options:
-            st.markdown("### 🎨 选择模板风格（点击卡片选择）")
-            st.markdown("根据上传的公司模板，已识别出以下风格：")
+            st.markdown('<div class="section-title"><h3>选择模板风格</h3></div>', unsafe_allow_html=True)
+            st.markdown("根据上传的公司模板，已识别出以下风格，点击卡片选择：")
 
             num_cols = min(2, len(master_options))
             cols = st.columns(num_cols)
@@ -385,80 +400,58 @@ with tab1:
             for i, option in enumerate(master_options):
                 with cols[i % num_cols]:
                     bg_display = option.get("display_color", "")
+                    is_selected = selected_master_index == option["index"]
+                    selected_class = "selected" if is_selected else ""
 
                     if bg_display:
                         bg_hex = f"#{bg_display}" if bg_display and not bg_display.startswith("#") else bg_display
-                        text_color = "#000000" if _is_light_color(bg_display) else "#FFFFFF"
-                        is_selected = selected_master_index == option["index"]
-                        border_color = "#2196F3" if is_selected else "#e0e0e0"
-                        border_width = "3px" if is_selected else "1px"
-                        shadow_style = "0 4px 12px rgba(33, 150, 243, 0.3)" if is_selected else "0 2px 8px rgba(0,0,0,0.1)"
-
+                        text_color = "#1A1A1A" if _is_light_color(bg_display) else "#FFFFFF"
+                        
                         st.markdown(f"""
-                        <div style="
-                            border: {border_width} solid {border_color};
-                            border-radius: 12px;
-                            padding: 16px;
-                            background-color: {bg_hex};
-                            box-shadow: {shadow_style};
-                            text-align: center;
-                            margin-bottom: 8px;
-                        ">
-                            <div style="color: {text_color}; font-weight: bold; font-size: 16px; margin-bottom: 4px;">
-                                {option['style_name']}
+                        <div class="template-card {selected_class}">
+                            <div class="template-card-preview" style="background-color: {bg_hex};">
+                                {f'<div class="template-card-badge">已选择</div>' if is_selected else ''}
+                                <div style="color:{text_color};font-size:13px;font-weight:600;opacity:0.9;">
+                                    {option['bg_type'].upper() if option.get('bg_type') else ''}
+                                </div>
                             </div>
-                            <div style="color: {text_color}; font-size: 12px; opacity: 0.9;">
-                                {option['style_desc']}
+                            <div class="template-card-content">
+                                <div class="template-card-name">{option['style_name']}</div>
+                                <div class="template-card-desc">{option['style_desc']}</div>
                             </div>
-                            {'' if not is_selected else f'<div style="margin-top: 8px; padding: 4px; background-color: rgba(33,150,243,0.3); border-radius: 4px; color: {text_color}; font-size: 11px; display: inline-block;">✓ 已选择</div>'}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+                        <div class="template-card {selected_class}">
+                            <div class="template-card-preview" style="background-color: #F5F5F5;">
+                                {f'<div class="template-card-badge">已选择</div>' if is_selected else ''}
+                                <div style="color:#999;font-size:13px;">预览</div>
+                            </div>
+                            <div class="template-card-content">
+                                <div class="template-card-name">{option['style_name']}</div>
+                                <div class="template-card-desc">{option['style_desc']}</div>
+                            </div>
                         </div>
                         """, unsafe_allow_html=True)
 
-                        if st.button(
-                            f"选择",
-                            key=f"master_btn_{option['index']}",
-                            use_container_width=True,
-                            type="primary" if is_selected else "secondary",
-                        ):
-                            _save_config({
-                                "template_name": st.session_state.get("_template_file", {}).get("name", ""),
-                                "selected_master": option["index"],
-                                "include_header": st.session_state.get("include_header", False),
-                                "include_footer": st.session_state.get("include_footer", False),
-                                "include_icon": st.session_state.get("include_icon", False),
-                            })
-                            st.session_state["selected_master"] = option["index"]
-                    else:
-                        is_selected = selected_master_index == option["index"]
-                        card_style = "border: 2px solid #2196F3; background-color: #E3F2FD;" if is_selected else "border: 1px solid #e0e0e0; background-color: #f9f9f9;"
+                    if st.button(
+                        f"选择此风格",
+                        key=f"master_btn_{option['index']}",
+                        use_container_width=True,
+                        type="primary" if is_selected else "secondary",
+                    ):
+                        _save_config({
+                            "template_name": st.session_state.get("_template_file", {}).get("name", ""),
+                            "selected_master": option["index"],
+                            "include_header": st.session_state.get("include_header", False),
+                            "include_footer": st.session_state.get("include_footer", False),
+                            "include_icon": st.session_state.get("include_icon", False),
+                        })
+                        st.session_state["selected_master"] = option["index"]
+                        st.rerun()
 
-                        st.markdown(f"""
-                            <div style="border-radius: 12px; padding: 16px; {card_style}; text-align: center; margin-bottom: 8px;">
-                                <div style="font-weight: bold; font-size: 16px; margin-bottom: 4px;">
-                                    {option['style_name']}
-                                </div>
-                                <div style="font-size: 12px; color: #666;">
-                                    {option['style_desc']}
-                                </div>
-                            </div>
-                        """, unsafe_allow_html=True)
-
-                        if st.button(
-                            f"选择",
-                            key=f"master_btn_{option['index']}",
-                            use_container_width=True,
-                            type="primary" if is_selected else "secondary",
-                        ):
-                            _save_config({
-                                "template_name": st.session_state.get("_template_file", {}).get("name", ""),
-                                "selected_master": option["index"],
-                                "include_header": st.session_state.get("include_header", False),
-                                "include_footer": st.session_state.get("include_footer", False),
-                                "include_icon": st.session_state.get("include_icon", False),
-                            })
-                            st.session_state["selected_master"] = option["index"]
-
-            st.markdown(f"**当前选择**: Master #{selected_master_index} - {master_options[selected_master_index]['style_name']}")
+            st.info(f"**当前选择**: Master #{selected_master_index} - {master_options[selected_master_index]['style_name']}")
         else:
             st.warning("请先在页面上方上传公司标准模板，风格列表将自动加载")
             selected_master_index = 0
@@ -476,7 +469,7 @@ with tab1:
         })
 
     if uploaded_file is not None:
-        st.subheader("📋 文件信息")
+        st.markdown('<div class="section-title"><h3>文件信息</h3></div>', unsafe_allow_html=True)
         file_details = {
             "待转换文件": uploaded_file.name,
             "大小": f"{uploaded_file.size / 1024:.1f} KB",
@@ -488,10 +481,10 @@ with tab1:
         st.write(file_details)
 
     template_info = st.session_state.get("_template_file")
-    convert_button = st.button("🚀 开始转换", disabled=uploaded_file is None or template_info is None)
+    convert_button = st.button("⚡ 开始转换", disabled=uploaded_file is None or template_info is None, type="primary")
 
     if convert_button and uploaded_file and template_info:
-        with st.spinner("正在转换中..."):
+        with st.spinner("正在转换中，请稍候..."):
             with tempfile.TemporaryDirectory() as tmpdir:
                 input_path = os.path.join(tmpdir, uploaded_file.name)
                 output_filename = f"转换后的_{uploaded_file.name}"
@@ -517,7 +510,7 @@ with tab1:
                     include_icon=include_icon
                 )
 
-                st.info("🔍 步骤0: 源文件检查...")
+                st.markdown('<div class="step-indicator"><div class="step-number">0</div><div class="step-text">源文件检查...</div></div>', unsafe_allow_html=True)
                 validator = Validator()
                 source_report = validator.validate_source(input_path)
                 source_fail = [i for i in source_report.issues if i.level == "fail"]
@@ -532,18 +525,18 @@ with tab1:
                         for issue in source_warn[:5]:
                             st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
                     try:
-                        st.info("🔍 步骤1: 检测并去除水印...")
+                        st.markdown('<div class="step-indicator"><div class="step-number">1</div><div class="step-text">检测并去除水印...</div></div>', unsafe_allow_html=True)
                         extractor = PptxExtractor()
                         content_models = extractor.extract(input_path)
 
-                        st.info("📄 步骤2: 加载模板...")
+                        st.markdown('<div class="step-indicator"><div class="step-number">2</div><div class="step-text">加载模板...</div></div>', unsafe_allow_html=True)
                         registry = TemplateRegistry()
 
-                        st.info("✏️ 步骤3: 重放内容到新模板...")
+                        st.markdown('<div class="step-indicator"><div class="step-number">3</div><div class="step-text">重放内容到新模板...</div></div>', unsafe_allow_html=True)
                         replayer = ContentReplayer(registry, template_path=template_path)
                         temp_output = replayer.replay(content_models, config)
 
-                        st.info("✅ 步骤4: 质量校验...")
+                        st.markdown('<div class="step-indicator"><div class="step-number">4</div><div class="step-text">质量校验...</div></div>', unsafe_allow_html=True)
                         report = validator.validate(temp_output)
 
                         fail_issues = [i for i in report.issues if i.level == "fail"]
@@ -582,7 +575,7 @@ with tab1:
 
 # ============ Tab 2: 模板分析 ============
 with tab2:
-    st.subheader("🔍 分析公司标准模板")
+    st.markdown('<div class="section-title"><h3>分析公司标准模板</h3></div>', unsafe_allow_html=True)
     st.markdown("使用页面上方上传的公司标准模板，自动识别其中的 master 和 layout 结构。")
 
     template_info = st.session_state.get("_template_file")
@@ -649,23 +642,53 @@ with tab2:
             st.error("❌ 模板分析失败，请检查模板文件是否有效")
 
 st.markdown("---")
-st.markdown("### ℹ️ 关于应用")
-st.markdown("""
-- **技术适配模式**: 基于原PPT创建输出，保留原幻灯片和版式结构，通过技术适配调整样式
-- **不套用模板**: 不删除原模板，不直接套用目标模板的版式
-- **样式转换**: 有占位符的组件按目标模板转换；无占位符组件按是否有背景色分别处理
-- **模板持久化**: 上传一次模板后自动保存，下次打开页面可直接使用
-- **配置记忆**: 记住上次选择的风格、页眉页脚设置
-- **模板共享**: 上传一次模板，PPT 转换和模板分析两个页签共用，无需重复上传
-- **水印去除**: 自动检测并去除 "TRAE AI 生成"、"豆包 AI" 等水印
-- **动态风格**: 上传模板后自动加载其中的 master 风格供选择
-- **颜色预览**: 每个风格选项显示实际背景色预览
-- **质量校验**: 水印检测、字体白名单、布局有效性等多维度校验
-- **失败阻断**: 校验失败时不输出任何文件，确保产物质量
-- **保留比例**: 不强制16:9，保留原PPT的任意比例
-""")
+st.markdown('<div class="section-title"><h3>关于应用</h3></div>', unsafe_allow_html=True)
 
-version_text = f"📌 版本: `{APP_VERSION}`"
+col_about_1, col_about_2, col_about_3 = st.columns(3)
+
+with col_about_1:
+    st.markdown("""
+    <div class="schneider-card" style="padding: 20px;">
+        <div style="font-size: 18px; font-weight: 700; color: #3DCD58; margin-bottom: 8px;">⚙️ 技术适配</div>
+        <div style="font-size: 13px; color: #666; line-height: 1.6;">
+            基于原PPT创建输出，保留原幻灯片和版式结构，通过技术适配调整样式，不直接套用模板。
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col_about_2:
+    st.markdown("""
+    <div class="schneider-card" style="padding: 20px;">
+        <div style="font-size: 18px; font-weight: 700; color: #3DCD58; margin-bottom: 8px;">🎨 品牌一致</div>
+        <div style="font-size: 13px; color: #666; line-height: 1.6;">
+            自动提取模板的字体、颜色、页脚等品牌元素，确保输出PPT符合施耐德品牌规范。
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col_about_3:
+    st.markdown("""
+    <div class="schneider-card" style="padding: 20px;">
+        <div style="font-size: 18px; font-weight: 700; color: #3DCD58; margin-bottom: 8px;">✅ 质量校验</div>
+        <div style="font-size: 13px; color: #666; line-height: 1.6;">
+            多维度质量校验包括水印检测、字体白名单、布局有效性等，确保产物质量。
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+version_text = f"版本: <code>{APP_VERSION}</code>"
 if APP_VERSION_DATE:
-    version_text += f" | 更新: {APP_VERSION_DATE}"
-st.markdown(f"<div style='text-align: right; color: #999; font-size: 12px;'>{version_text}</div>", unsafe_allow_html=True)
+    version_text += f" &nbsp;|&nbsp; 更新: {APP_VERSION_DATE}"
+
+st.markdown(f"""
+<div class="schneider-footer">
+    <div class="schneider-footer-left">
+        {version_text}
+    </div>
+    <div class="schneider-footer-right">
+        <span class="schneider-footer-brand">Schneider Electric</span>
+        <span>·</span>
+        <span>PPT 标准模板转换工具</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)

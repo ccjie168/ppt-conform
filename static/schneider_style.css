@@ -1,0 +1,406 @@
+/* ========== 施耐德风格主题变量 ========== */
+:root {
+    --schneider-green: #3DCD58;
+    --schneider-green-dark: #2EAE4A;
+    --schneider-green-light: #E8F8EC;
+    --schneider-dark: #1A1A1A;
+    --schneider-gray-900: #333333;
+    --schneider-gray-700: #666666;
+    --schneider-gray-500: #999999;
+    --schneider-gray-300: #E0E0E0;
+    --schneider-gray-100: #F5F5F5;
+    --schneider-white: #FFFFFF;
+    --schneider-blue: #00A0E3;
+    --schneider-orange: #FF6600;
+}
+
+/* ========== 全局样式 ========== */
+.stApp {
+    background-color: var(--schneider-gray-100);
+    font-family: 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+/* ========== 主标题区域 ========== */
+h1 {
+    color: var(--schneider-dark) !important;
+    font-weight: 700 !important;
+    font-size: 32px !important;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px !important;
+}
+
+h1 + p {
+    color: var(--schneider-gray-700) !important;
+    font-size: 14px !important;
+    line-height: 1.6;
+}
+
+h2, h3 {
+    color: var(--schneider-dark) !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.3px;
+}
+
+/* ========== 顶部装饰线 ========== */
+.schneider-header {
+    display: flex;
+    align-items: center;
+    padding: 20px 0 16px 0;
+    border-bottom: 3px solid var(--schneider-green);
+    margin-bottom: 24px;
+}
+
+.schneider-logo {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--schneider-green);
+    letter-spacing: 1px;
+    margin-right: 16px;
+}
+
+.schneider-logo span {
+    color: var(--schneider-dark);
+}
+
+.schneider-header-text h1 {
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 24px !important;
+}
+
+.schneider-header-text p {
+    margin: 4px 0 0 0 !important;
+    color: var(--schneider-gray-700);
+    font-size: 13px;
+}
+
+/* ========== 分区标题 ========== */
+.section-title {
+    display: flex;
+    align-items: center;
+    margin: 28px 0 16px 0;
+}
+
+.section-title::before {
+    content: '';
+    display: inline-block;
+    width: 4px;
+    height: 20px;
+    background-color: var(--schneider-green);
+    margin-right: 12px;
+    border-radius: 2px;
+}
+
+.section-title h2,
+.section-title h3 {
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 18px !important;
+}
+
+/* ========== 卡片容器 ========== */
+.schneider-card {
+    background: var(--schneider-white);
+    border-radius: 8px;
+    padding: 24px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    border: 1px solid var(--schneider-gray-300);
+    margin-bottom: 16px;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.schneider-card:hover {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    border-color: var(--schneider-green);
+}
+
+/* ========== 按钮样式 ========== */
+.stButton > button {
+    background-color: var(--schneider-green) !important;
+    color: var(--schneider-white) !important;
+    border: none !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    padding: 10px 24px !important;
+    transition: all 0.2s ease !important;
+    box-shadow: none !important;
+}
+
+.stButton > button:hover {
+    background-color: var(--schneider-green-dark) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(61, 205, 88, 0.3) !important;
+}
+
+.stButton > button:active {
+    transform: translateY(0);
+}
+
+.stButton > button[kind="secondary"] {
+    background-color: var(--schneider-white) !important;
+    color: var(--schneider-gray-900) !important;
+    border: 1px solid var(--schneider-gray-300) !important;
+}
+
+.stButton > button[kind="secondary"]:hover {
+    background-color: var(--schneider-green-light) !important;
+    border-color: var(--schneider-green) !important;
+    color: var(--schneider-green-dark) !important;
+    box-shadow: none !important;
+}
+
+/* ========== 上传区域 ========== */
+.stFileUploader {
+    background-color: var(--schneider-white);
+    border: 2px dashed var(--schneider-gray-300);
+    border-radius: 8px;
+    padding: 16px;
+    transition: border-color 0.2s ease;
+}
+
+.stFileUploader:hover {
+    border-color: var(--schneider-green);
+}
+
+/* ========== Tab 样式 ========== */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0;
+    background-color: transparent;
+    border-bottom: 2px solid var(--schneider-gray-300);
+}
+
+.stTabs [data-baseweb="tab"] {
+    height: 50px;
+    padding: 0 24px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--schneider-gray-700);
+    background-color: transparent;
+    border-radius: 0;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s ease;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    color: var(--schneider-green-dark);
+}
+
+.stTabs [aria-selected="true"] {
+    color: var(--schneider-green-dark) !important;
+    border-bottom: 3px solid var(--schneider-green) !important;
+    background-color: var(--schneider-green-light) !important;
+}
+
+/* ========== 复选框 ========== */
+.stCheckbox {
+    padding: 8px 0;
+}
+
+/* ========== 成功/警告/错误信息 ========== */
+.stSuccess {
+    background-color: var(--schneider-green-light) !important;
+    color: var(--schneider-dark) !important;
+    border: 1px solid var(--schneider-green) !important;
+    border-radius: 6px !important;
+    padding: 12px 16px !important;
+}
+
+.stWarning {
+    background-color: #FFF4E5 !important;
+    color: var(--schneider-dark) !important;
+    border: 1px solid var(--schneider-orange) !important;
+    border-radius: 6px !important;
+    padding: 12px 16px !important;
+}
+
+.stError {
+    background-color: #FFE5E5 !important;
+    color: var(--schneider-dark) !important;
+    border: 1px solid #E53935 !important;
+    border-radius: 6px !important;
+    padding: 12px 16px !important;
+}
+
+.stInfo {
+    background-color: #E3F2FD !important;
+    color: var(--schneider-dark) !important;
+    border: 1px solid var(--schneider-blue) !important;
+    border-radius: 6px !important;
+    padding: 12px 16px !important;
+}
+
+/* ========== 模板选择卡片 ========== */
+.template-card {
+    border-radius: 10px;
+    overflow: hidden;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    border: 2px solid transparent;
+    margin-bottom: 12px;
+}
+
+.template-card.selected {
+    border-color: var(--schneider-green);
+    box-shadow: 0 6px 20px rgba(61, 205, 88, 0.25);
+    transform: translateY(-2px);
+}
+
+.template-card:not(.selected):hover {
+    border-color: var(--schneider-gray-300);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.template-card-preview {
+    height: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+}
+
+.template-card-content {
+    padding: 12px 16px;
+    background: var(--schneider-white);
+    border-top: 1px solid var(--schneider-gray-300);
+}
+
+.template-card-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--schneider-dark);
+    margin-bottom: 2px;
+}
+
+.template-card-desc {
+    font-size: 12px;
+    color: var(--schneider-gray-700);
+}
+
+.template-card-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: var(--schneider-green);
+    color: var(--schneider-white);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* ========== 页脚 ========== */
+.schneider-footer {
+    margin-top: 40px;
+    padding-top: 24px;
+    border-top: 1px solid var(--schneider-gray-300);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.schneider-footer-left {
+    color: var(--schneider-gray-500);
+    font-size: 12px;
+}
+
+.schneider-footer-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--schneider-gray-500);
+    font-size: 12px;
+}
+
+.schneider-footer-brand {
+    font-weight: 700;
+    color: var(--schneider-green);
+    font-size: 14px;
+    letter-spacing: 0.5px;
+}
+
+/* ========== 进度/步骤指示器 ========== */
+.step-indicator {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.step-number {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background-color: var(--schneider-green);
+    color: var(--schneider-white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.step-text {
+    color: var(--schneider-gray-900);
+    font-size: 14px;
+    font-weight: 500;
+}
+
+/* ========== 分隔线 ========== */
+hr {
+    border: none;
+    border-top: 1px solid var(--schneider-gray-300);
+    margin: 24px 0;
+}
+
+/* ========== 表格 ========== */
+.stTable {
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--schneider-gray-300);
+}
+
+.stTable th {
+    background-color: var(--schneider-green-light) !important;
+    color: var(--schneider-dark) !important;
+    font-weight: 600 !important;
+    border-bottom: 2px solid var(--schneider-green) !important;
+}
+
+.stTable tr:nth-child(even) {
+    background-color: var(--schneider-gray-100);
+}
+
+/* ========== 展开器 ========== */
+.streamlit-expanderHeader {
+    font-weight: 600;
+    color: var(--schneider-dark);
+}
+
+.streamlit-expanderHeader:hover {
+    color: var(--schneider-green-dark);
+}
+
+/* ========== 代码块 ========== */
+.stCodeBlock {
+    border-radius: 6px;
+    border: 1px solid var(--schneider-gray-300);
+}
+
+/* ========== Sidebar ========== */
+section[data-testid="stSidebar"] {
+    background-color: var(--schneider-white);
+    border-right: 1px solid var(--schneider-gray-300);
+}
+
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {
+    color: var(--schneider-dark);
+}
