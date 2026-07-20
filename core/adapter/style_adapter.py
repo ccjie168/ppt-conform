@@ -106,20 +106,15 @@ class StyleAdapter:
         # 1. 删除水印
         self._remove_watermarks(slide)
         
-        # 2. 删除原页脚（不添加新页脚，模板页脚由用户配置决定）
+        # 2. 删除原页脚占位符及内容，应用模板页脚
         self._remove_original_footer(slide)
+        self._add_template_footer(slide)
         
         # 3. 修改背景色
         self._apply_background(slide)
         
-        # 4. 统一字体（新增）
-        self._unify_fonts(slide)
-        
-        # 5. 根据位置调整文字颜色
-        self._adjust_text_colors(slide)
-        
-        # 6. 修改强调色（边框、装饰元素）
-        self._apply_accent_colors(slide)
+        # 4. 统一字体和颜色（按新规则）
+        self._unify_fonts_and_colors(slide)
     
     def _remove_watermarks(self, slide):
         """删除水印文字和形状"""
@@ -138,15 +133,18 @@ class StyleAdapter:
             sp.getparent().remove(sp)
     
     def _remove_original_footer(self, slide):
-        """删除原PPT的页脚文字和署名"""
+        """删除原PPT的页脚占位符及页脚区域的所有内容
+        
+        规则：
+        1. 删除页脚区域（底部12%）内的所有形状
+        2. 包括页脚占位符和非占位符的页脚内容
+        """
         indices_to_remove = []
         
         for i, shape in enumerate(slide.shapes):
             top = shape.top or 0
             if top > self.footer_threshold:
-                is_ph = shape.is_placeholder if hasattr(shape, 'is_placeholder') else False
-                if not is_ph:
-                    indices_to_remove.append(i)
+                indices_to_remove.append(i)
         
         for i in reversed(indices_to_remove):
             shape = slide.shapes[i]
@@ -206,6 +204,99 @@ class StyleAdapter:
                         run.font.name = target_font
                         # 同时设置东亚字体（中文）
                         run.font._element.set('eastAsian', target_font)
+    
+    def _unify_fonts_and_colors(self, slide):
+        """统一字体和颜色 - 按新规则处理
+        
+        规则：
+        1. 有占位符定义的组件（标题、副标题、正文等）→ 比照目标模板做转换（字体和颜色）
+        2. 没有占位符定义的组件（text box, shape等）→ 保留，但分两种情况：
+           a) 本身有背景颜色的 → 字体转变成模板字体，颜色不变
+           b) 本身没有背景颜色的 → 字体和颜色要符合目标模板的color pairing
+        """
+        if not self.text_color_rules:
+            return
+        
+        title_font = self.text_color_rules.get("title_font", "Arial")
+        body_font = self.text_color_rules.get("body_font", "Arial")
+        
+        # 判断背景色深浅（用于color pairing）
+        bg_is_dark = self._detect_background_darkness(slide)
+        if bg_is_dark:
+            template_title_color = self.text_color_rules.get("title_color", "FFFFFF")
+            template_body_color = self.text_color_rules.get("body_color", "E8F5E9")
+        else:
+            template_title_color = "333333"
+            template_body_color = "555555"
+        
+        for shape in slide.shapes:
+            if not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
+                continue
+            
+            is_placeholder = shape.is_placeholder if hasattr(shape, 'is_placeholder') else False
+            
+            # 判断形状是否有背景颜色
+            has_bg_color = self._shape_has_background(shape)
+            
+            tf = shape.text_frame
+            
+            for paragraph in tf.paragraphs:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        font_size = run.font.size
+                        is_bold = run.font.bold
+                        
+                        # 判断是否是标题（字号大或加粗）
+                        is_title = font_size and font_size >= Pt(24) or is_bold
+                        
+                        # 设置字体
+                        if is_title:
+                            run.font.name = title_font
+                        else:
+                            run.font.name = body_font
+                        run.font._element.set('eastAsian', run.font.name)
+                        
+                        # 设置颜色
+                        if is_placeholder:
+                            # 有占位符定义的组件：完全应用模板颜色
+                            if is_title:
+                                target_color = template_title_color
+                            else:
+                                target_color = template_body_color
+                            self._set_font_color(run.font, target_color)
+                            self._set_xml_font_color(run._r, target_color)
+                        else:
+                            # 没有占位符定义的组件
+                            if has_bg_color:
+                                # 有背景颜色：字体转模板字体，颜色不变
+                                pass  # 颜色保持原样
+                            else:
+                                # 没有背景颜色：颜色要符合color pairing
+                                if is_title:
+                                    target_color = template_title_color
+                                else:
+                                    target_color = template_body_color
+                                self._set_font_color(run.font, target_color)
+                                self._set_xml_font_color(run._r, target_color)
+    
+    def _shape_has_background(self, shape) -> bool:
+        """判断形状是否有背景颜色
+        
+        返回True表示形状有可见的填充颜色
+        注意：白色(FFFFFF)也是有背景的（卡片），只有真正透明或无填充才视为没有背景
+        """
+        try:
+            fill_type = shape.fill.type
+            if fill_type == 1:  # solid fill
+                fill_color = str(shape.fill.fore_color.rgb).upper()
+                # 只有真正的无填充或黑色背景才视为没有背景
+                if fill_color not in ["000000", "NONE", None]:
+                    return True
+            elif fill_type == 2:  # gradient
+                return True
+        except:
+            pass
+        return False
     
     def _remove_full_page_background(self, slide):
         """删除铺满整页的背景矩形
