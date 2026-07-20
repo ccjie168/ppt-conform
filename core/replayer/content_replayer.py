@@ -666,19 +666,29 @@ class ContentReplayer:
         # 5. 检查并修复溢出
         self._check_and_fix_overflow(slide)
 
-    def _remove_original_footer(self, slide) -> None:
-        """删除原PPT的页脚元素（包括占位符和普通文本框/图片）
+    def _is_footer_shape(self, shape, footer_threshold) -> bool:
+        """判断一个形状是否是页脚元素（位于底部区域）"""
+        try:
+            top = shape.top or Emu(0)
+            height = shape.height or Emu(0)
+            bottom = top + height
 
-        删除底部区域（>75%页面高度）的所有页脚相关元素：
-        - 页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）
-        - 底部区域的文本框（如版权信息）
-        - 底部区域的图片（如图标）
-        """
-        footer_threshold = self.target_height * 0.75
+            if top > footer_threshold or bottom > footer_threshold:
+                if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
+                    return True
+                if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
+                    if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                        if shape.text_frame.text.strip():
+                            return True
+            return False
+        except Exception:
+            return False
 
+    def _collect_footer_indices(self, shapes, footer_threshold) -> list:
+        """收集底部区域所有需要删除的形状索引（递归处理group）"""
         indices_to_remove = []
 
-        for i, shape in enumerate(slide.shapes):
+        for i, shape in enumerate(shapes):
             try:
                 if shape.is_placeholder:
                     phf = shape.placeholder_format
@@ -686,12 +696,37 @@ class ContentReplayer:
                         indices_to_remove.append(i)
                         continue
 
-                top = shape.top or Emu(0)
-                if top > footer_threshold:
-                    if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
-                        indices_to_remove.append(i)
+                if self._is_footer_shape(shape, footer_threshold):
+                    indices_to_remove.append(i)
+                    continue
+
+                if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    try:
+                        group_top = shape.top or Emu(0)
+                        group_height = shape.height or Emu(0)
+                        group_bottom = group_top + group_height
+                        if group_top > footer_threshold or group_bottom > footer_threshold:
+                            indices_to_remove.append(i)
+                    except Exception:
+                        pass
             except Exception:
                 continue
+
+        return indices_to_remove
+
+    def _remove_original_footer(self, slide) -> None:
+        """删除原PPT的页脚元素（包括占位符、文本框、图片、自选图形、组）
+
+        删除底部区域（>70%页面高度）的所有页脚相关元素：
+        - 页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）
+        - 底部区域的文本框（如版权信息）
+        - 底部区域的图片（如图标）
+        - 底部区域带文本的自选图形
+        - 底部区域的组形状
+        """
+        footer_threshold = self.target_height * 0.70
+
+        indices_to_remove = self._collect_footer_indices(slide.shapes, footer_threshold)
 
         for i in reversed(indices_to_remove):
             try:
@@ -704,24 +739,10 @@ class ContentReplayer:
     def _remove_master_footer_elements(self, prs) -> None:
         """删除母版中的页脚元素，确保原PPT的页脚不影响输出"""
         page_height = prs.slide_height
-        footer_threshold = page_height * 0.75
+        footer_threshold = page_height * 0.70
 
         for master in prs.slide_masters:
-            indices_to_remove = []
-            for i, shape in enumerate(master.shapes):
-                try:
-                    if shape.is_placeholder:
-                        phf = shape.placeholder_format
-                        if phf.type in (13, 14, 15, 16):
-                            indices_to_remove.append(i)
-                            continue
-
-                    top = shape.top or Emu(0)
-                    if top > footer_threshold:
-                        if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
-                            indices_to_remove.append(i)
-                except Exception:
-                    continue
+            indices_to_remove = self._collect_footer_indices(master.shapes, footer_threshold)
 
             for i in reversed(indices_to_remove):
                 try:
@@ -848,8 +869,8 @@ class ContentReplayer:
                     # a) 本身有背景颜色的 → 字体转模板字体，颜色不变
                     self._convert_non_placeholder_with_bg(shape, title_font, body_font)
                 else:
-                    # b) 本身没有背景颜色的 → 字体和颜色按color pairing
-                    self._convert_non_placeholder_no_bg(shape, title_font, body_font, template_title_color, template_body_color)
+                    # b) 本身没有背景颜色的 → 字体改模板字体，颜色尽量保留原色（不违反color pairing时）
+                    self._convert_non_placeholder_no_bg(shape, title_font, body_font, template_title_color, template_body_color, bg_is_dark)
 
     def _is_content_placeholder(self, shape) -> bool:
         """判断是否是内容占位符（标题、副标题、正文等）
@@ -909,8 +930,14 @@ class ContentReplayer:
             pass
 
     def _convert_non_placeholder_no_bg(self, shape, title_font: str, body_font: str,
-                                          title_color: str, body_color: str) -> None:
-        """无占位符且无背景颜色的组件：字体和颜色按color pairing"""
+                                          title_color: str, body_color: str,
+                                          bg_is_dark: bool = True) -> None:
+        """无占位符且无背景颜色的组件：字体改模板字体，颜色尽量保留原色（不违反color pairing时）
+
+        规则：
+        - 字体统一改成模板字体
+        - 颜色：如果原颜色与幻灯片背景对比度足够（不违反color pairing），保留原色；否则用color pairing颜色
+        """
         try:
             tf = shape.text_frame
             for paragraph in tf.paragraphs:
@@ -921,16 +948,45 @@ class ContentReplayer:
                         is_title = font_size and font_size >= Pt(24) or is_bold
                         
                         target_font = title_font if is_title else body_font
-                        target_color = title_color if is_title else body_color
+                        fallback_color = title_color if is_title else body_color
                         
                         run.font.name = target_font
                         run.font._element.set('eastAsian', target_font)
+                        
                         try:
-                            run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
+                            original_color = None
+                            if run.font.color and run.font.color.rgb:
+                                original_color = str(run.font.color.rgb).upper()
+                            
+                            if original_color and self._color_has_enough_contrast(original_color, bg_is_dark):
+                                pass
+                            else:
+                                run.font.color.rgb = RGBColor.from_string(fallback_color.lstrip("#"))
                         except Exception:
-                            pass
+                            try:
+                                run.font.color.rgb = RGBColor.from_string(fallback_color.lstrip("#"))
+                            except Exception:
+                                pass
         except Exception:
             pass
+
+    def _color_has_enough_contrast(self, hex_color: str, bg_is_dark: bool) -> bool:
+        """判断文字颜色与背景是否有足够对比度（不违反color pairing）
+        
+        简化判断：
+        - 深色背景 + 浅色文字（亮度>=0.5）：对比度足够
+        - 浅色背景 + 深色文字（亮度<0.5）：对比度足够
+        """
+        if not hex_color or len(hex_color) != 6:
+            return False
+        try:
+            color_is_dark = self._is_dark_color(hex_color)
+            if bg_is_dark:
+                return not color_is_dark
+            else:
+                return color_is_dark
+        except Exception:
+            return False
 
     def _shape_has_background_color(self, shape) -> bool:
         """判断形状是否有背景颜色（用于text box/shape处理）"""
