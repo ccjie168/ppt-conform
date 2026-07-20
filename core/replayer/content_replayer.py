@@ -285,87 +285,86 @@ class ContentReplayer:
         except Exception:
             pass
 
+    def _adapt_master_background_size(self, prs) -> None:
+        """适配母版背景尺寸，确保在页面尺寸变更后背景能铺满整个页面
+        
+        当强制设置16:9页面尺寸后，母版中的背景形状（矩形、图片等）尺寸不会自动更新，
+        导致背景只占部分区域。此方法遍历所有母版和版式，更新背景形状尺寸。
+        """
+        target_width = prs.slide_width
+        target_height = prs.slide_height
+
+        try:
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+            for master in prs.slide_masters:
+                for shape in master.shapes:
+                    try:
+                        left = shape.left or 0
+                        top = shape.top or 0
+                        width = shape.width or 0
+                        height = shape.height or 0
+
+                        is_full_bg = (
+                            abs(left) < Emu(20000) and
+                            abs(top) < Emu(20000) and
+                            width > 0 and height > 0
+                        )
+
+                        if is_full_bg:
+                            if abs(width - target_width) > Emu(50000) or abs(height - target_height) > Emu(50000):
+                                shape.width = target_width
+                                shape.height = target_height
+                                shape.left = Emu(0)
+                                shape.top = Emu(0)
+                    except Exception:
+                        continue
+
+                for layout in master.slide_layouts:
+                    for shape in layout.shapes:
+                        try:
+                            left = shape.left or 0
+                            top = shape.top or 0
+                            width = shape.width or 0
+                            height = shape.height or 0
+
+                            is_full_bg = (
+                                abs(left) < Emu(20000) and
+                                abs(top) < Emu(20000) and
+                                width > 0 and height > 0
+                            )
+
+                            if is_full_bg:
+                                if abs(width - target_width) > Emu(50000) or abs(height - target_height) > Emu(50000):
+                                    shape.width = target_width
+                                    shape.height = target_height
+                                    shape.left = Emu(0)
+                                    shape.top = Emu(0)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
     def replay(self, content_models: list[SlideContentModel], config: UserConfig) -> str:
-        if self.template_path and Path(self.template_path).exists():
-            output_prs = Presentation(self.template_path)
-            self._clear_slides(output_prs)
-        else:
-            output_prs = Presentation()
+        source_prs = Presentation(config.input_path)
+        
+        output_prs = Presentation(config.input_path)
+
+        selected_master_index = int(config.master_style) if config.master_style.isdigit() else 0
+
+        # 从目标模板只提取选中母版的样式信息（技术适配模式）
+        self._extract_selected_master_styles(selected_master_index)
 
         # 强制输出为16:9宽屏
         output_prs.slide_width = self.WIDESCREEN_16_9
         output_prs.slide_height = self.WIDESCREEN_16_9_H
 
-        # 计算源和目标的尺寸比例，用于尺寸适配
-        source_prs = Presentation(config.input_path)
         self.source_width = source_prs.slide_width
         self.source_height = source_prs.slide_height
         self.target_width = output_prs.slide_width
         self.target_height = output_prs.slide_height
         self.scale_x = self.target_width / self.source_width if self.source_width else 1.0
         self.scale_y = self.target_height / self.source_height if self.source_height else 1.0
-
-        selected_master_index = int(config.master_style) if config.master_style.isdigit() else 0
-
-        if selected_master_index >= len(output_prs.slide_masters):
-            selected_master_index = 0
-
-        selected_master = output_prs.slide_masters[selected_master_index]
-
-        # 根据所选Master设置默认文字颜色（深色背景用白色文字，浅色背景用深色文字）
-        # 同时重新分析所选Master的footer元素
-        if self.template_path and Path(self.template_path).exists():
-            try:
-                extractor = TemplateFormatExtractor()
-                self.default_text_color = extractor.get_text_color_for_master(
-                    self.template_path, selected_master_index
-                )
-                
-                # 根据master_style设置颜色配置（关键修复）
-                # F1/F2: 浅色背景，使用深色文字
-                # F3/F4: 深色背景，使用白色文字
-                master_style = config.master_style.upper()
-                self.master_style = master_style  # 保存为实例变量，供其他方法使用
-                colors = extractor.extract_theme_colors(self.template_path)
-                
-                if master_style in ("F1", "F2"):
-                    # 浅色背景模板：正文用深色，标题用dark green background 2
-                    self.title_text_color = colors.get("dk2", "3DCD58")
-                    # 确保正文颜色为深色
-                    if not self.default_text_color or self._is_light_color(self.default_text_color):
-                        self.default_text_color = "333333"
-                else:
-                    # 深色背景模板(F3/F4)：正文和标题都用白色
-                    self.title_text_color = colors.get("lt1", "FFFFFF")
-                    self.default_text_color = "FFFFFF"
-                
-                # 更新template_formats中的颜色
-                if self.default_text_color:
-                    if "body" not in self.template_formats:
-                        self.template_formats["body"] = {}
-                    if not self.template_formats["body"].get("color"):
-                        self.template_formats["body"]["color"] = self.default_text_color
-                if self.title_text_color:
-                    if "title" not in self.template_formats:
-                        self.template_formats["title"] = {}
-                    self.template_formats["title"]["color"] = self.title_text_color
-                
-                # 更新主题字体（使用对应Master的主题）
-                self.theme_fonts = extractor.extract_theme_fonts(
-                    self.template_path, selected_master_index
-                )
-                # 重新分析所选Master的footer元素
-                self._analyze_template_footer(self.template_path, selected_master_index)
-                
-                # 从母版中删除品牌图片，避免与代码添加的页脚图标重复
-                self._remove_master_brand_images(output_prs)
-                
-                # 提取所选Master的占位符语义映射
-                self.placeholder_mapping = extractor.extract_placeholder_mapping(
-                    self.template_path, selected_master_index
-                )
-            except Exception:
-                pass
 
         # 分析原PPT主色调，建立颜色映射（遵循模板配色要求）
         try:
@@ -377,46 +376,84 @@ class ContentReplayer:
         except Exception:
             self.color_mapping = {}
 
-        # 提取模板主题字体（用于字体统一）
-        try:
-            from core.analyzer.template_format_extractor import TemplateFormatExtractor
-            font_extractor = TemplateFormatExtractor()
-            if selected_master_index is not None:
-                fonts = font_extractor.extract_theme_fonts(self.template_path, selected_master_index)
-                self.template_title_font = fonts.get("major")
-                self.template_body_font = fonts.get("minor")
-        except Exception:
-            self.template_title_font = None
-            self.template_body_font = None
-
-        for slide_idx, model in enumerate(content_models):
-            if selected_master:
-                layout_name = self._determine_layout(model)
-                layout_index = self._resolve_layout_index(layout_name, selected_master, config.master_style)
-                slide_layouts = list(selected_master.slide_layouts)
-                if layout_index >= len(slide_layouts):
-                    layout_index = 0
-                slide = output_prs.slides.add_slide(slide_layouts[layout_index])
-                
-                # 动态获取当前layout的占位符映射（关键修复）
-                try:
-                    extractor = TemplateFormatExtractor()
-                    self.placeholder_mapping = extractor.extract_placeholder_mapping(
-                        self.template_path, selected_master_index, layout_index
-                    )
-                except Exception:
-                    pass
-            else:
-                slide = output_prs.slides.add_slide(output_prs.slide_layouts[1])
-            
-            self._clear_placeholders(slide)
-            self._add_background_image(slide)
-            self._add_footer_shapes(slide)
-            self._copy_slide_content(slide, model, slide_idx)
-            self._check_and_fix_overflow(slide)
+        # 逐页应用样式适配
+        for slide_idx, slide in enumerate(output_prs.slides):
+            self._apply_style_adaptation(slide, slide_idx)
 
         output_prs.save(config.output_path)
         return config.output_path
+
+    def _extract_selected_master_styles(self, selected_master_index: int) -> None:
+        """从目标模板只提取选中母版的样式信息，不引入其他模板"""
+        if not self.template_path or not Path(self.template_path).exists():
+            return
+
+        try:
+            extractor = TemplateFormatExtractor()
+            self.default_text_color = extractor.get_text_color_for_master(
+                self.template_path, selected_master_index
+            )
+            
+            master_style = str(selected_master_index).upper()
+            self.master_style = master_style
+            
+            colors = extractor.extract_theme_colors(self.template_path)
+            
+            if master_style in ("F1", "F2", "0", "1"):
+                self.title_text_color = colors.get("dk2", "3DCD58")
+                if not self.default_text_color or self._is_light_color(self.default_text_color):
+                    self.default_text_color = "333333"
+            else:
+                self.title_text_color = colors.get("lt1", "FFFFFF")
+                self.default_text_color = "FFFFFF"
+            
+            if self.default_text_color:
+                if "body" not in self.template_formats:
+                    self.template_formats["body"] = {}
+                if not self.template_formats["body"].get("color"):
+                    self.template_formats["body"]["color"] = self.default_text_color
+            if self.title_text_color:
+                if "title" not in self.template_formats:
+                    self.template_formats["title"] = {}
+                self.template_formats["title"]["color"] = self.title_text_color
+            
+            self.theme_fonts = extractor.extract_theme_fonts(
+                self.template_path, selected_master_index
+            )
+            
+            self._analyze_template_footer(self.template_path, selected_master_index)
+            
+            self.placeholder_mapping = extractor.extract_placeholder_mapping(
+                self.template_path, selected_master_index
+            )
+            
+            fonts = extractor.extract_theme_fonts(self.template_path, selected_master_index)
+            self.template_title_font = fonts.get("major")
+            self.template_body_font = fonts.get("minor")
+            
+        except Exception:
+            pass
+
+    def _apply_style_adaptation(self, slide, slide_idx: int) -> None:
+        """对单页幻灯片应用技术适配样式调整
+        
+        技术适配原则：保留原PPT版式结构，通过样式调整使其与目标模板一致
+        """
+        # 1. 删除水印
+        self._remove_watermarks_from_slide(slide)
+        
+        # 2. 删除原页脚，应用模板页脚
+        self._remove_original_footer_from_slide(slide)
+        self._add_footer_shapes(slide)
+        
+        # 3. 应用背景
+        self._apply_background_to_slide(slide)
+        
+        # 4. 统一字体和颜色
+        self._unify_fonts_and_colors_on_slide(slide)
+        
+        # 5. 检查并修复溢出
+        self._check_and_fix_overflow(slide)
 
     def _adapt_position(self, value, axis: str = "x") -> int:
         """根据源/目标尺寸比例适配位置或大小"""
@@ -2865,3 +2902,119 @@ class ContentReplayer:
         
         # 默认内容页
         return "content"
+
+    def _remove_watermarks_from_slide(self, slide):
+        """删除水印文字和形状"""
+        from core.watermark.detector import WatermarkDetector
+        detector = WatermarkDetector()
+        
+        indices_to_remove = []
+        
+        for i, shape in enumerate(slide.shapes):
+            if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                text = shape.text_frame.text.strip()
+                result = detector.detect_text(text, 0)
+                if result and result.detected:
+                    indices_to_remove.append(i)
+        
+        for i in reversed(indices_to_remove):
+            shape = slide.shapes[i]
+            sp = shape._element
+            sp.getparent().remove(sp)
+
+    def _remove_original_footer_from_slide(self, slide):
+        """删除原PPT的页脚占位符及页脚区域的所有内容"""
+        footer_threshold = self.target_height * 0.88
+        
+        indices_to_remove = []
+        
+        for i, shape in enumerate(slide.shapes):
+            top = shape.top or 0
+            if top > footer_threshold:
+                indices_to_remove.append(i)
+        
+        for i in reversed(indices_to_remove):
+            shape = slide.shapes[i]
+            sp = shape._element
+            sp.getparent().remove(sp)
+
+    def _apply_background_to_slide(self, slide):
+        """应用背景色或渐变"""
+        if self.background_image:
+            self._add_background_image(slide)
+        elif self.background_theme_color:
+            try:
+                from pptx.enum.dml import MSO_THEME_COLOR
+                theme_color_map = {
+                    'bg1': MSO_THEME_COLOR.BACKGROUND_1,
+                    'bg2': MSO_THEME_COLOR.BACKGROUND_2,
+                    'tx1': MSO_THEME_COLOR.TEXT_1,
+                    'tx2': MSO_THEME_COLOR.TEXT_2,
+                    'accent1': MSO_THEME_COLOR.ACCENT_1,
+                    'accent2': MSO_THEME_COLOR.ACCENT_2,
+                    'accent3': MSO_THEME_COLOR.ACCENT_3,
+                    'accent4': MSO_THEME_COLOR.ACCENT_4,
+                    'accent5': MSO_THEME_COLOR.ACCENT_5,
+                    'accent6': MSO_THEME_COLOR.ACCENT_6,
+                    'lt1': MSO_THEME_COLOR.LIGHT_1,
+                    'lt2': MSO_THEME_COLOR.LIGHT_2,
+                    'dk1': MSO_THEME_COLOR.DARK_1,
+                    'dk2': MSO_THEME_COLOR.DARK_2,
+                }
+                mso_color = theme_color_map.get(self.background_theme_color.lower())
+                if mso_color is not None:
+                    bg = slide.background
+                    fill = bg.fill
+                    fill.solid()
+                    fill.fore_color.theme_color = mso_color
+            except Exception:
+                pass
+        elif self.background_color:
+            try:
+                bg = slide.background
+                fill = bg.fill
+                fill.solid()
+                fill.fore_color.rgb = RGBColor.from_string(self.background_color)
+            except Exception:
+                pass
+
+    def _unify_fonts_and_colors_on_slide(self, slide):
+        """统一字体和颜色"""
+        if not self.template_title_font and not self.template_body_font:
+            return
+        
+        title_font = self.template_title_font or "Arial"
+        body_font = self.template_body_font or "Arial"
+        
+        for shape in slide.shapes:
+            if not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
+                continue
+            
+            tf = shape.text_frame
+            
+            for paragraph in tf.paragraphs:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        font_size = run.font.size
+                        is_bold = run.font.bold
+                        
+                        is_title = font_size and font_size >= Pt(24) or is_bold
+                        
+                        if is_title:
+                            run.font.name = title_font
+                        else:
+                            run.font.name = body_font
+                        
+                        run.font._element.set('eastAsian', run.font.name)
+                        
+                        if is_title and self.title_text_color:
+                            self._set_font_color_on_run(run, self.title_text_color)
+                        elif self.default_text_color:
+                            self._set_font_color_on_run(run, self.default_text_color)
+
+    def _set_font_color_on_run(self, run, hex_color: str):
+        """设置字体颜色"""
+        try:
+            run.font.color.rgb = RGBColor.from_string(hex_color.lstrip("#"))
+        except:
+            pass

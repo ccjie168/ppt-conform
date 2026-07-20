@@ -366,37 +366,29 @@ class StyleAdapter:
     def _apply_gradient_background(self, slide):
         """应用渐变背景"""
         colors = self.background_config.get("colors", [])
+        if not colors:
+            start_color = self.background_config.get("start_color", "#1A237E")
+            end_color = self.background_config.get("end_color", "#0D47A1")
+            colors = [start_color, end_color]
+        
         if len(colors) >= 2:
-            # 创建一个铺满整页的矩形作为背景
-            from pptx.enum.shapes import MSO_SHAPE_TYPE
-            from pptx.oxml.xmlchemy import OxmlElement
-            
-            bg_shape = slide.shapes.add_shape(
-                MSO_SHAPE_TYPE.AUTO_SHAPE,
-                left=Emu(0),
-                top=Emu(0),
-                width=self.slide_width,
-                height=self.slide_height
-            )
-            
-            # 设置渐变填充
             try:
-                bg_shape.fill.gradient()
-                grad = bg_shape.fill.gradient
-                grad.angle = self.background_config.get("angle", 90)
+                slide.background.fill.gradient()
                 
-                # 设置渐变颜色
-                stops = grad.stops
+                stops = slide.background.fill.gradient_stops
+                
                 for i, color in enumerate(colors):
-                    stop = stops.add_position(i / (len(colors) - 1))
-                    stop.color.rgb = RGBColor.from_string(color.lstrip("#"))
-            except Exception:
-                # 如果渐变设置失败，使用纯色填充
-                bg_shape.fill.solid()
-                bg_shape.fill.fore_color.rgb = RGBColor.from_string(colors[0].lstrip("#"))
-            
-            # 确保背景在最底层
-            bg_shape.zorder = 0
+                    if i < len(stops):
+                        stops[i].color.rgb = RGBColor.from_string(color.lstrip("#"))
+                    else:
+                        break
+                
+                angle = self.background_config.get("angle", 90)
+                if hasattr(slide.background.fill, 'gradient_angle'):
+                    slide.background.fill.gradient_angle = angle
+            except Exception as e:
+                slide.background.fill.solid()
+                slide.background.fill.fore_color.rgb = RGBColor.from_string(colors[0].lstrip("#"))
     
     def _apply_solid_background(self, slide):
         """应用纯色背景"""

@@ -24,13 +24,20 @@ def test_replay_basic():
         )
     ]
 
-    # 创建临时输入PPT文件
+    # 创建临时输入PPT文件（技术适配模式：输出页数与原PPT一致）
     temp_input = Path("/tmp/input_test.pptx")
-    if not temp_input.exists():
-        prs = Presentation()
-        slide_layout = prs.slide_layouts[0]
-        slide = prs.slides.add_slide(slide_layout)
-        prs.save(str(temp_input))
+    if temp_input.exists():
+        temp_input.unlink()
+    
+    prs = Presentation()
+    slide_layout = prs.slide_layouts[0]
+    slide = prs.slides.add_slide(slide_layout)
+    slide.shapes.title.text = "测试封面"
+    
+    slide_layout2 = prs.slide_layouts[1]
+    slide2 = prs.slides.add_slide(slide_layout2)
+    slide2.shapes.title.text = "测试内容"
+    prs.save(str(temp_input))
 
     config = UserConfig(
         input_path=str(temp_input),
@@ -46,6 +53,7 @@ def test_replay_basic():
     prs = Presentation(output_path)
     assert len(prs.slides) == 2
     assert prs.slides[0].shapes.title.text == "测试封面"
+    assert prs.slides[1].shapes.title.text == "测试内容"
 
     Path(output_path).unlink()
     temp_input.unlink()
