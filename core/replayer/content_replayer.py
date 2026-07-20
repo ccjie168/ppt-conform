@@ -355,7 +355,7 @@ class ContentReplayer:
         self._extract_selected_master_styles(selected_master_index)
 
         # 从目标模板复制选中的母版和版式到输出PPT（保留原母版）
-        self._copy_selected_master_to_output(output_prs, selected_master_index)
+        output_prs = self._copy_selected_master_to_output(output_prs, selected_master_index)
 
         # 删除原PPT母版中的页脚元素，避免继承到幻灯片
         self._remove_master_footer_elements(output_prs)
@@ -382,14 +382,14 @@ class ContentReplayer:
         output_prs.save(config.output_path)
         return config.output_path
 
-    def _copy_selected_master_to_output(self, output_prs, selected_master_index: int) -> None:
+    def _copy_selected_master_to_output(self, output_prs, selected_master_index: int):
         """从目标模板只复制选中的母版和版式到输出PPT，保留原母版
 
-        使用zipfile直接操作PPTX文件（本质是ZIP压缩包），
-        因为python-pptx的Package对象没有create_part方法。
+        使用zipfile完整复制母版相关的所有文件，确保PPT结构完整不损坏。
+        返回新的Presentation对象。
         """
         if not self.template_path or not Path(self.template_path).exists():
-            return
+            return output_prs
 
         try:
             import zipfile
@@ -398,128 +398,156 @@ class ContentReplayer:
 
             template_prs = Presentation(self.template_path)
             if selected_master_index >= len(template_prs.slide_masters):
-                return
+                return output_prs
 
             template_master = template_prs.slide_masters[selected_master_index]
+            template_master_idx = selected_master_index + 1
 
-            temp_path = '/tmp/tmp_output_for_master.pptx'
+            temp_path = '/tmp/tmp_output_master_src.pptx'
             output_prs.save(temp_path)
 
             with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp:
                 tmp_path = tmp.name
 
-            with zipfile.ZipFile(temp_path, 'r') as src_zip, \
+            ns_ct = 'http://schemas.openxmlformats.org/package/2006/content-types'
+            ns_rels = 'http://schemas.openxmlformats.org/package/2006/relationships'
+            ns_p = 'http://schemas.openxmlformats.org/presentationml/2006/main'
+            ns_r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+            with zipfile.ZipFile(self.template_path, 'r') as tpl_zip, \
+                 zipfile.ZipFile(temp_path, 'r') as src_zip, \
                  zipfile.ZipFile(tmp_path, 'w') as dst_zip:
 
-                master_xml_bytes = template_master.part.blob
-                new_master_idx = len(output_prs.slide_masters) + 1
-                master_filename = 'ppt/slideMasters/slideMaster%d.xml' % new_master_idx
+                src_files = set(src_zip.namelist())
 
-                layout_counter = 1
-                for item in src_zip.infolist():
-                    if 'ppt/slideLayouts/slideLayout' in item.filename:
-                        layout_counter += 1
+                existing_layouts = len([f for f in src_files if 'ppt/slideLayouts/slideLayout' in f and '_rels' not in f])
+                existing_masters = len([f for f in src_files if 'ppt/slideMasters/slideMaster' in f and '_rels' not in f])
+                existing_themes = len([f for f in src_files if 'ppt/theme/theme' in f and '_rels' not in f])
 
-                presentation_xml = src_zip.read('ppt/presentation.xml')
-                presentation_elem = etree.fromstring(presentation_xml)
-                nsmap_p = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main'}
-                ns_rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+                new_master_idx = existing_masters + 1
 
-                sld_master_id_lst = presentation_elem.find('.//p:sldMasterIdLst', nsmap_p)
-                if sld_master_id_lst is None:
-                    sld_master_id_lst = etree.SubElement(
-                        presentation_elem,
-                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterIdLst'
-                    )
+                tpl_master_xml = tpl_zip.read(f'ppt/slideMasters/slideMaster{template_master_idx}.xml')
+                tpl_master_rels = tpl_zip.read(f'ppt/slideMasters/_rels/slideMaster{template_master_idx}.xml.rels')
 
-                rId_master = 'rId%d' % (100 + new_master_idx)
-                new_master_elem = etree.SubElement(
-                    sld_master_id_lst,
-                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterId'
-                )
-                new_master_elem.set('{%s}id' % ns_rels, rId_master)
+                master_rels_elem = etree.fromstring(tpl_master_rels)
+                layout_rels = master_rels_elem.findall(f'{{{ns_rels}}}Relationship[@Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout"]')
+                theme_rels = master_rels_elem.findall(f'{{{ns_rels}}}Relationship[@Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"]')
 
-                master_elem = etree.fromstring(master_xml_bytes)
-                sld_layout_id_lst = master_elem.find('.//p:sldLayoutIdLst', nsmap_p)
-                if sld_layout_id_lst is not None:
-                    for child in list(sld_layout_id_lst):
-                        sld_layout_id_lst.remove(child)
-                else:
-                    sld_layout_id_lst = etree.SubElement(
-                        master_elem,
-                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutIdLst'
-                    )
+                layout_mapping = {}
+                new_layout_idx = existing_layouts + 1
+                for rel in layout_rels:
+                    target = rel.get('Target')
+                    layout_num = target.split('slideLayout')[-1].split('.')[0]
+                    layout_mapping[layout_num] = new_layout_idx
+                    new_layout_idx += 1
 
-                layout_idx = layout_counter
-                for _ in template_master.slide_layouts:
-                    rId_layout = 'rId%d' % (200 + layout_idx)
-                    new_layout_elem = etree.SubElement(
-                        sld_layout_id_lst,
-                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId'
-                    )
-                    new_layout_elem.set('{%s}id' % ns_rels, rId_layout)
-                    layout_idx += 1
+                theme_mapping = {}
+                new_theme_idx = existing_themes + 1
+                for rel in theme_rels:
+                    target = rel.get('Target')
+                    theme_num = target.split('theme')[-1].split('.')[0]
+                    theme_mapping[theme_num] = new_theme_idx
+                    new_theme_idx += 1
 
-                rels_data = src_zip.read('ppt/_rels/presentation.xml.rels')
-                rels_elem = etree.fromstring(rels_data)
-                ns_rels_def = 'http://schemas.openxmlformats.org/package/2006/relationships'
+                files_to_copy = {}
 
-                new_rel = etree.SubElement(
-                    rels_elem,
-                    '{%s}Relationship' % ns_rels_def
-                )
-                new_rel.set('Id', rId_master)
-                new_rel.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster')
-                new_rel.set('Target', 'slideMasters/slideMaster%d.xml' % new_master_idx)
+                new_master_filename = f'ppt/slideMasters/slideMaster{new_master_idx}.xml'
+                files_to_copy[new_master_filename] = tpl_master_xml
 
-                layout_idx = layout_counter
-                layout_filenames = []
-                for layout in template_master.slide_layouts:
-                    layout_xml_bytes = layout.part.blob
-                    layout_filename = 'ppt/slideLayouts/slideLayout%d.xml' % layout_idx
-                    layout_filenames.append(layout_filename)
-                    layout_idx += 1
+                new_master_rels_filename = f'ppt/slideMasters/_rels/slideMaster{new_master_idx}.xml.rels'
+                files_to_copy[new_master_rels_filename] = tpl_master_rels
+
+                for old_layout_num, new_layout_num in layout_mapping.items():
+                    old_layout_path = f'ppt/slideLayouts/slideLayout{old_layout_num}.xml'
+                    new_layout_path = f'ppt/slideLayouts/slideLayout{new_layout_num}.xml'
+                    if old_layout_path in tpl_zip.namelist():
+                        files_to_copy[new_layout_path] = tpl_zip.read(old_layout_path)
+
+                    old_layout_rels_path = f'ppt/slideLayouts/_rels/slideLayout{old_layout_num}.xml.rels'
+                    new_layout_rels_path = f'ppt/slideLayouts/_rels/slideLayout{new_layout_num}.xml.rels'
+                    if old_layout_rels_path in tpl_zip.namelist():
+                        files_to_copy[new_layout_rels_path] = tpl_zip.read(old_layout_rels_path)
+
+                for old_theme_num, new_theme_num in theme_mapping.items():
+                    old_theme_path = f'ppt/theme/theme{old_theme_num}.xml'
+                    new_theme_path = f'ppt/theme/theme{new_theme_num}.xml'
+                    if old_theme_path in tpl_zip.namelist():
+                        files_to_copy[new_theme_path] = tpl_zip.read(old_theme_path)
+
+                master_rels_new = etree.fromstring(tpl_master_rels)
+                for rel in master_rels_new.findall(f'{{{ns_rels}}}Relationship'):
+                    target = rel.get('Target', '')
+
+                    if 'slideLayout' in target:
+                        old_num = target.split('slideLayout')[-1].split('.')[0]
+                        if old_num in layout_mapping:
+                            rel.set('Target', f'../slideLayouts/slideLayout{layout_mapping[old_num]}.xml')
+                    elif 'theme' in target:
+                        old_num = target.split('theme')[-1].split('.')[0]
+                        if old_num in theme_mapping:
+                            rel.set('Target', f'../theme/theme{theme_mapping[old_num]}.xml')
+
+                files_to_copy[new_master_rels_filename] = etree.tostring(master_rels_new, xml_declaration=True, encoding='UTF-8', standalone=True)
 
                 for item in src_zip.infolist():
                     data = src_zip.read(item.filename)
 
-                    if item.filename == 'ppt/presentation.xml':
-                        data = etree.tostring(presentation_elem, pretty_print=True)
+                    if item.filename == '[Content_Types].xml':
+                        ct_elem = etree.fromstring(data)
+
+                        for old_layout_num, new_layout_num in layout_mapping.items():
+                            override = etree.SubElement(ct_elem, f'{{{ns_ct}}}Override')
+                            override.set('PartName', f'/ppt/slideLayouts/slideLayout{new_layout_num}.xml')
+                            override.set('ContentType', 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml')
+
+                        for old_theme_num, new_theme_num in theme_mapping.items():
+                            override = etree.SubElement(ct_elem, f'{{{ns_ct}}}Override')
+                            override.set('PartName', f'/ppt/theme/theme{new_theme_num}.xml')
+                            override.set('ContentType', 'application/vnd.openxmlformats-officedocument.theme+xml')
+
+                        override = etree.SubElement(ct_elem, f'{{{ns_ct}}}Override')
+                        override.set('PartName', f'/ppt/slideMasters/slideMaster{new_master_idx}.xml')
+                        override.set('ContentType', 'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml')
+
+                        data = etree.tostring(ct_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+                    elif item.filename == 'ppt/presentation.xml':
+                        pres_elem = etree.fromstring(data)
+                        sld_master_id_lst = pres_elem.find(f'.//{{{ns_p}}}sldMasterIdLst')
+                        if sld_master_id_lst is None:
+                            sld_master_id_lst = etree.SubElement(
+                                pres_elem,
+                                f'{{{ns_p}}}sldMasterIdLst'
+                            )
+
+                        new_master_id = etree.SubElement(
+                            sld_master_id_lst,
+                            f'{{{ns_p}}}sldMasterId'
+                        )
+                        new_master_id.set(f'{{{ns_r}}}id', f'rIdMaster{new_master_idx}')
+
+                        data = etree.tostring(pres_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
+
                     elif item.filename == 'ppt/_rels/presentation.xml.rels':
-                        data = etree.tostring(rels_elem, pretty_print=True)
+                        pres_rels_elem = etree.fromstring(data)
+
+                        new_rel = etree.SubElement(pres_rels_elem, f'{{{ns_rels}}}Relationship')
+                        new_rel.set('Id', f'rIdMaster{new_master_idx}')
+                        new_rel.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster')
+                        new_rel.set('Target', f'slideMasters/slideMaster{new_master_idx}.xml')
+
+                        data = etree.tostring(pres_rels_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
 
                     dst_zip.writestr(item.filename, data)
 
-                dst_zip.writestr(master_filename, etree.tostring(master_elem, pretty_print=True))
+                for filename, content in files_to_copy.items():
+                    if filename not in src_files:
+                        dst_zip.writestr(filename, content)
 
-                layout_idx = layout_counter
-                for layout in template_master.slide_layouts:
-                    layout_xml_bytes = layout.part.blob
-                    layout_filename = 'ppt/slideLayouts/slideLayout%d.xml' % layout_idx
-                    dst_zip.writestr(layout_filename, layout_xml_bytes)
-                    layout_idx += 1
-
-                master_rels_path = 'ppt/slideMasters/_rels/slideMaster%d.xml.rels' % new_master_idx
-                layout_idx = layout_counter
-                rels_elem = etree.Element('{%s}Relationships' % ns_rels_def)
-
-                for _ in template_master.slide_layouts:
-                    rId_layout = 'rId%d' % (200 + layout_idx)
-                    new_rel = etree.SubElement(
-                        rels_elem,
-                        '{%s}Relationship' % ns_rels_def
-                    )
-                    new_rel.set('Id', rId_layout)
-                    new_rel.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout')
-                    new_rel.set('Target', '../slideLayouts/slideLayout%d.xml' % layout_idx)
-                    layout_idx += 1
-
-                dst_zip.writestr(master_rels_path, etree.tostring(rels_elem, pretty_print=True))
-
-            output_prs.__init__(tmp_path)
+            return Presentation(tmp_path)
 
         except Exception:
-            pass
+            return output_prs
 
     def _resize_master_backgrounds(self, prs) -> None:
         """调整母版背景尺寸，确保与页面尺寸匹配"""
