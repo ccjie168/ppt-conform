@@ -347,7 +347,6 @@ class ContentReplayer:
 
     def replay(self, content_models: list[SlideContentModel], config: UserConfig) -> str:
         source_prs = Presentation(config.input_path)
-        
         output_prs = Presentation(config.input_path)
 
         selected_master_index = int(config.master_style) if config.master_style.isdigit() else 0
@@ -355,18 +354,13 @@ class ContentReplayer:
         # 从目标模板只提取选中母版的样式信息（技术适配模式）
         self._extract_selected_master_styles(selected_master_index)
 
-        # 强制输出为16:9宽屏
-        output_prs.slide_width = self.WIDESCREEN_16_9
-        output_prs.slide_height = self.WIDESCREEN_16_9_H
-
         self.source_width = source_prs.slide_width
         self.source_height = source_prs.slide_height
         self.target_width = output_prs.slide_width
         self.target_height = output_prs.slide_height
-        self.scale_x = self.target_width / self.source_width if self.source_width else 1.0
-        self.scale_y = self.target_height / self.source_height if self.source_height else 1.0
+        self.scale_x = 1.0
+        self.scale_y = 1.0
 
-        # 分析原PPT主色调，建立颜色映射（遵循模板配色要求）
         try:
             master_style = config.master_style.upper()
             master_config = self.registry.get_master_style(master_style)
@@ -376,7 +370,6 @@ class ContentReplayer:
         except Exception:
             self.color_mapping = {}
 
-        # 逐页应用样式适配
         for slide_idx, slide in enumerate(output_prs.slides):
             self._apply_style_adaptation(slide, slide_idx)
 
@@ -437,23 +430,299 @@ class ContentReplayer:
     def _apply_style_adaptation(self, slide, slide_idx: int) -> None:
         """对单页幻灯片应用技术适配样式调整
         
-        技术适配原则：保留原PPT版式结构，通过样式调整使其与目标模板一致
+        技术适配原则：
+        1. 有占位符定义的组件（标题、副标题、正文等）→ 比照目标模板的占位符做转换（字体和颜色）
+        2. 没有占位符定义的组件（text box, shape等）→ 保留，分两种情况：
+           a) 本身有背景颜色的 → 字体转变成模板字体，颜色不变
+           b) 本身没有背景颜色的 → 字体和颜色要符合目标模板的color pairing
+        3. 识别为页脚的占位符 → 删除，并完全应用模板的页脚定义
         """
         # 1. 删除水印
         self._remove_watermarks_from_slide(slide)
         
-        # 2. 删除原页脚，应用模板页脚
-        self._remove_original_footer_from_slide(slide)
-        self._add_footer_shapes(slide)
+        # 2. 识别并删除页脚占位符，应用模板页脚
+        self._remove_footer_placeholders(slide)
+        self._apply_template_footer(slide)
         
-        # 3. 应用背景
+        # 3. 应用背景（基于目标模板）
         self._apply_background_to_slide(slide)
         
-        # 4. 统一字体和颜色
-        self._unify_fonts_and_colors_on_slide(slide)
+        # 4. 按规则转换组件样式
+        self._convert_components_style(slide)
         
         # 5. 检查并修复溢出
         self._check_and_fix_overflow(slide)
+
+    def _remove_footer_placeholders(self, slide) -> None:
+        """识别并删除页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）"""
+        header_footer_types = (13, 14, 15, 16)
+        
+        indices_to_remove = []
+        
+        for i, shape in enumerate(slide.shapes):
+            try:
+                if shape.is_placeholder:
+                    phf = shape.placeholder_format
+                    if phf.type in header_footer_types:
+                        indices_to_remove.append(i)
+            except Exception:
+                continue
+        
+        for i in reversed(indices_to_remove):
+            try:
+                shape = slide.shapes[i]
+                sp = shape._element
+                sp.getparent().remove(sp)
+            except Exception:
+                continue
+
+    def _apply_template_footer(self, slide) -> None:
+        """完全应用模板的页脚定义"""
+        if not self.footer_shapes:
+            return
+        
+        try:
+            for footer_info in self.footer_shapes:
+                try:
+                    from pptx.enum.shapes import MSO_SHAPE_TYPE
+                    from io import BytesIO
+                    
+                    shape_type = footer_info.get("type")
+                    left = footer_info.get("left", Emu(0))
+                    top = footer_info.get("top", Emu(0))
+                    width = footer_info.get("width", Emu(3048000))
+                    height = footer_info.get("height", Emu(406400))
+                    
+                    if shape_type == MSO_SHAPE_TYPE.PICTURE:
+                        image_blob = footer_info.get("image_blob")
+                        if image_blob:
+                            stream = BytesIO(image_blob)
+                            slide.shapes.add_picture(
+                                stream,
+                                left=int(left),
+                                top=int(top),
+                                width=int(width),
+                                height=int(height),
+                            )
+                    else:
+                        textbox = slide.shapes.add_textbox(
+                            int(left), int(top), int(width), int(height)
+                        )
+                        text = footer_info.get("text", "")
+                        if text:
+                            textbox.text_frame.text = text
+                            try:
+                                font_name = footer_info.get("font_name", "Calibri")
+                                font_size = footer_info.get("font_size", Pt(10))
+                                font_color = footer_info.get("font_color")
+                                font_bold = footer_info.get("font_bold")
+                                
+                                para = textbox.text_frame.paragraphs[0]
+                                if para.runs:
+                                    run = para.runs[0]
+                                    run.font.name = font_name
+                                    if font_size:
+                                        run.font.size = font_size
+                                    if font_bold is not None:
+                                        run.font.bold = font_bold
+                                    if font_color:
+                                        run.font.color.rgb = font_color
+                            except Exception:
+                                pass
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _convert_components_style(self, slide) -> None:
+        """按规则转换幻灯片上所有组件的样式
+        
+        规则：
+        1. 有占位符定义的组件（标题、副标题、正文等）→ 完全应用目标模板样式
+        2. 没有占位符定义的组件（text box, shape等）→ 分两种情况处理
+        """
+        if not self.template_title_font and not self.template_body_font:
+            return
+        
+        title_font = self.template_title_font or "Arial"
+        body_font = self.template_body_font or "Arial"
+        
+        # 检测背景深浅用于color pairing
+        bg_is_dark = self._detect_slide_background_darkness(slide)
+        if bg_is_dark:
+            template_title_color = self.title_text_color or "FFFFFF"
+            template_body_color = self.default_text_color or "E8F5E9"
+        else:
+            template_title_color = "333333"
+            template_body_color = "555555"
+        
+        for shape in slide.shapes:
+            if not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
+                continue
+            
+            is_placeholder = self._is_content_placeholder(shape)
+            
+            if is_placeholder:
+                # 规则1：有占位符定义的组件 → 完全应用目标模板样式（字体和颜色）
+                self._convert_placeholder_style(shape, title_font, body_font, template_title_color, template_body_color)
+            else:
+                # 规则2：没有占位符定义的组件 → 按是否有背景色分别处理
+                has_bg_color = self._shape_has_background_color(shape)
+                if has_bg_color:
+                    # a) 本身有背景颜色的 → 字体转模板字体，颜色不变
+                    self._convert_non_placeholder_with_bg(shape, title_font, body_font)
+                else:
+                    # b) 本身没有背景颜色的 → 字体和颜色按color pairing
+                    self._convert_non_placeholder_no_bg(shape, title_font, body_font, template_title_color, template_body_color)
+
+    def _is_content_placeholder(self, shape) -> bool:
+        """判断是否是内容占位符（标题、副标题、正文等）
+        
+        页眉/页脚/页码/日期占位符不算内容占位符
+        """
+        header_footer_types = (13, 14, 15, 16)  # SLIDE_NUMBER, HEADER, FOOTER, DATE
+        try:
+            if not shape.is_placeholder:
+                return False
+            phf = shape.placeholder_format
+            if phf.type in header_footer_types:
+                return False
+            # 1=TITLE, 3=CENTER_TITLE, 4=SUBTITLE, 2=BODY
+            return phf.type in (1, 2, 3, 4, 7, 8, 9, 10, 18)
+        except Exception:
+            return False
+
+    def _convert_placeholder_style(self, shape, title_font: str, body_font: str,
+                                     title_color: str, body_color: str) -> None:
+        """有占位符定义的组件：完全应用目标模板样式（字体和颜色）"""
+        try:
+            phf = shape.placeholder_format
+            is_title = phf.type in (1, 3)  # TITLE or CENTER_TITLE
+            target_font = title_font if is_title else body_font
+            target_color = title_color if is_title else body_color
+            
+            tf = shape.text_frame
+            for paragraph in tf.paragraphs:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        run.font.name = target_font
+                        run.font._element.set('eastAsian', target_font)
+                        try:
+                            run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    def _convert_non_placeholder_with_bg(self, shape, title_font: str, body_font: str) -> None:
+        """无占位符但有背景颜色的组件：字体转模板字体，颜色不变"""
+        try:
+            tf = shape.text_frame
+            for paragraph in tf.paragraphs:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        font_size = run.font.size
+                        is_bold = run.font.bold
+                        is_title = font_size and font_size >= Pt(24) or is_bold
+                        target_font = title_font if is_title else body_font
+                        
+                        run.font.name = target_font
+                        run.font._element.set('eastAsian', target_font)
+                        # 颜色保持不变
+        except Exception:
+            pass
+
+    def _convert_non_placeholder_no_bg(self, shape, title_font: str, body_font: str,
+                                          title_color: str, body_color: str) -> None:
+        """无占位符且无背景颜色的组件：字体和颜色按color pairing"""
+        try:
+            tf = shape.text_frame
+            for paragraph in tf.paragraphs:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        font_size = run.font.size
+                        is_bold = run.font.bold
+                        is_title = font_size and font_size >= Pt(24) or is_bold
+                        
+                        target_font = title_font if is_title else body_font
+                        target_color = title_color if is_title else body_color
+                        
+                        run.font.name = target_font
+                        run.font._element.set('eastAsian', target_font)
+                        try:
+                            run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    def _shape_has_background_color(self, shape) -> bool:
+        """判断形状是否有背景颜色（用于text box/shape处理）"""
+        try:
+            fill_type = shape.fill.type
+            if fill_type == 1:  # solid fill
+                fill_color = str(shape.fill.fore_color.rgb).upper()
+                if fill_color not in ["000000", "NONE", None]:
+                    return True
+            elif fill_type == 2:  # gradient
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _detect_slide_background_darkness(self, slide) -> bool:
+        """检测幻灯片背景是否为深色"""
+        try:
+            if slide.background.fill.type == 1:  # solid
+                color = str(slide.background.fill.fore_color.rgb).upper()
+                return self._is_dark_color(color)
+        except Exception:
+            pass
+        
+        try:
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+            for shape in slide.shapes:
+                if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
+                    left = shape.left or Emu(0)
+                    top = shape.top or Emu(0)
+                    width = shape.width or Emu(0)
+                    height = shape.height or Emu(0)
+                    
+                    is_full_page = (
+                        left <= Emu(1000) and
+                        top <= Emu(1000) and
+                        width >= self.target_width - Emu(2000) and
+                        height >= self.target_height - Emu(2000)
+                    )
+                    
+                    if is_full_page:
+                        try:
+                            if shape.fill.type == 1:  # solid
+                                color = str(shape.fill.fore_color.rgb).upper()
+                                return self._is_dark_color(color)
+                            elif shape.fill.type == 2:  # gradient
+                                colors = [str(s.color.rgb).upper() for s in shape.fill.gradient.stops]
+                                dark_count = sum(1 for c in colors if self._is_dark_color(c))
+                                return dark_count >= len(colors) / 2
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        
+        return True
+
+    def _is_dark_color(self, hex_color: str) -> bool:
+        """判断颜色是否为深色"""
+        if not hex_color or len(hex_color) != 6:
+            return False
+        try:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+            return luminance < 0.5
+        except Exception:
+            return False
 
     def _adapt_position(self, value, axis: str = "x") -> int:
         """根据源/目标尺寸比例适配位置或大小"""

@@ -58,8 +58,10 @@ APP_VERSION_DATE = _get_git_commit_date()
 
 
 def _check_template_aspect_ratio(template_file) -> tuple[bool, str, str]:
-    """检查模板是否为16:9宽屏比例。
-
+    """检查模板尺寸是否合法。
+    
+    不再强制要求16:9比例，保留原PPT的任意比例进行技术适配。
+    
     返回: (是否通过, 比例描述, 错误消息)
     """
     try:
@@ -78,13 +80,6 @@ def _check_template_aspect_ratio(template_file) -> tuple[bool, str, str]:
         os.unlink(tmp_path)
 
         ratio_str = f"{width / 914400:.2f} x {height / 914400:.2f} 英寸 (比例 {ratio:.3f})"
-
-        if abs(ratio - WIDESCREEN_16_9_RATIO) > ASPECT_RATIO_TOLERANCE:
-            return False, ratio_str, (
-                f"⚠️ 不支持该比例的模板：当前模板为 {ratio_str}，"
-                f"仅支持 16:9 宽屏模板（比例约 1.778）。"
-                f"请上传 16:9 宽屏模板后重试。"
-            )
         return True, ratio_str, ""
     except Exception as e:
         return False, "", f"模板尺寸检查失败: {str(e)}"
@@ -269,10 +264,10 @@ col_upload, col_reload = st.columns([3, 1])
 
 with col_upload:
     global_template = st.file_uploader(
-        "选择公司标准模板 PPT（仅支持 16:9 宽屏）",
+        "选择公司标准模板 PPT（技术适配模式，保留原PPT比例）",
         type=["pptx"],
         key="global_template",
-        help="此模板将在 PPT 转换和模板分析两个页签中共用。仅支持 16:9 宽屏模板，4:3 模板会被拒绝。",
+        help="此模板将在 PPT 转换和模板分析两个页签中共用。技术适配模式保留原PPT的版式和比例，不会强制套用模板。",
     )
 
 with col_reload:
@@ -295,7 +290,7 @@ if global_template is not None:
         _clear_last_template()
         global_template = None
     else:
-        st.success(f"✅ 已上传模板：{global_template.name}（{global_template.size / 1024:.1f} KB） - 16:9 宽屏 ({ratio_str})")
+        st.success(f"✅ 已上传模板：{global_template.name}（{global_template.size / 1024:.1f} KB） - 技术适配 ({ratio_str})")
         _save_template(global_template)
         _analyze_template_file(global_template)
         auto_load_done = True
@@ -307,7 +302,7 @@ elif use_last_template:
             st.error(err_msg)
             _clear_last_template()
         else:
-            st.success(f"✅ 已加载上次模板：{mock_file.name}（{mock_file.size / 1024:.1f} KB） - 16:9 宽屏 ({ratio_str})")
+            st.success(f"✅ 已加载上次模板：{mock_file.name}（{mock_file.size / 1024:.1f} KB） - 技术适配 ({ratio_str})")
             _analyze_template_file(mock_file, is_reload=True)
             global_template = mock_file
             auto_load_done = True
@@ -656,6 +651,9 @@ with tab2:
 st.markdown("---")
 st.markdown("### ℹ️ 关于应用")
 st.markdown("""
+- **技术适配模式**: 基于原PPT创建输出，保留原幻灯片和版式结构，通过技术适配调整样式
+- **不套用模板**: 不删除原模板，不直接套用目标模板的版式
+- **样式转换**: 有占位符的组件按目标模板转换；无占位符组件按是否有背景色分别处理
 - **模板持久化**: 上传一次模板后自动保存，下次打开页面可直接使用
 - **配置记忆**: 记住上次选择的风格、页眉页脚设置
 - **模板共享**: 上传一次模板，PPT 转换和模板分析两个页签共用，无需重复上传
@@ -664,7 +662,7 @@ st.markdown("""
 - **颜色预览**: 每个风格选项显示实际背景色预览
 - **质量校验**: 水印检测、字体白名单、布局有效性等多维度校验
 - **失败阻断**: 校验失败时不输出任何文件，确保产物质量
-- **16:9 强制**: 模板输入仅支持 16:9 宽屏，4:3 模板会被拒绝并提示
+- **保留比例**: 不强制16:9，保留原PPT的任意比例
 """)
 
 version_text = f"📌 版本: `{APP_VERSION}`"
