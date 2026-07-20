@@ -381,7 +381,7 @@ class ContentReplayer:
 
     def _copy_selected_master_to_output(self, output_prs, selected_master_index: int) -> None:
         """从目标模板只复制选中的母版和版式到输出PPT，保留原母版
-        
+
         技术适配模式：
         1. 保留原PPT的母版结构（原母版可见）
         2. 从目标模板只复制选中的母版和版式（其他3个母版/版式不带入）
@@ -392,53 +392,88 @@ class ContentReplayer:
 
         try:
             template_prs = Presentation(self.template_path)
-            
+
             if selected_master_index >= len(template_prs.slide_masters):
                 return
 
             template_master = template_prs.slide_masters[selected_master_index]
-            
-            template_master_xml = template_master._element
-            output_sld_master_list = output_prs.part.rels._rels.get('sldMasterIdLst', None)
-            
-            if output_sld_master_list is None:
-                for key in output_prs.part.rels._rels:
-                    if 'sldMasterIdLst' in key:
-                        output_sld_master_list = output_prs.part.rels._rels[key]
-                        break
-            
-            if output_sld_master_list is None:
-                return
-            
+
+            # 获取 presentation.xml 中的 sldMasterIdLst
             from lxml import etree
-            new_master_elem = etree.SubElement(output_sld_master_list, '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterId')
-            
+            presentation_elem = output_prs.part._element
+            nsmap_p = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main'}
+
+            sld_master_id_lst = presentation_elem.find('.//p:sldMasterIdLst', nsmap_p)
+            if sld_master_id_lst is None:
+                return
+
+            # 复制母版 part（使用原始blob）
+            template_master_part = template_master.part
+            master_xml_bytes = template_master_part.blob
+
+            new_master_idx = len(output_prs.slide_masters) + 1
             new_master_part = output_prs.part._package.create_part(
-                '/ppt/slideMasters/slideMaster%d.xml' % (len(output_prs.slide_masters) + 1),
+                '/ppt/slideMasters/slideMaster%d.xml' % new_master_idx,
                 'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml',
-                template_master_xml
+                master_xml_bytes
             )
-            
-            rId = output_prs.part.relate_to(new_master_part, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster')
-            new_master_elem.set('id', rId)
-            
-            for layout in template_master.slide_layouts:
-                layout_xml = layout._element
-                
-                new_layout_part = output_prs.part._package.create_part(
-                    '/ppt/slideLayouts/slideLayout%d.xml' % (len(output_prs.slide_layouts) + 1),
-                    'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
-                    layout_xml
-                )
-                
-                rId_layout = new_master_part.relate_to(new_layout_part, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout')
-                
-                layout_elem = etree.SubElement(new_master_elem, '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId')
-                layout_elem.set('id', rId_layout)
-            
+
+            # 建立 presentation 与母版的关系
+            rId = output_prs.part.relate_to(
+                new_master_part,
+                'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster'
+            )
+
+            # 添加到 sldMasterIdLst
+            new_master_elem = etree.SubElement(
+                sld_master_id_lst,
+                '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterId'
+            )
+            new_master_elem.set(
+                '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id',
+                rId
+            )
+
+            # 处理版式
+            master_xml = new_master_part._element
+            sld_layout_id_lst = master_xml.find('.//p:sldLayoutIdLst', nsmap_p)
+
+            if sld_layout_id_lst is not None:
+                # 清空现有的版式引用
+                for child in list(sld_layout_id_lst):
+                    sld_layout_id_lst.remove(child)
+
+                # 复制每个版式
+                for layout in template_master.slide_layouts:
+                    layout_part = layout.part
+                    layout_xml_bytes = layout_part.blob
+
+                    new_layout_idx = len(output_prs.slide_layouts) + 1
+                    new_layout_part = output_prs.part._package.create_part(
+                        '/ppt/slideLayouts/slideLayout%d.xml' % new_layout_idx,
+                        'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
+                        layout_xml_bytes
+                    )
+
+                    # 建立母版与版式的关系
+                    rId_layout = new_master_part.relate_to(
+                        new_layout_part,
+                        'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout'
+                    )
+
+                    # 添加到 sldLayoutIdLst
+                    new_layout_elem = etree.SubElement(
+                        sld_layout_id_lst,
+                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId'
+                    )
+                    new_layout_elem.set(
+                        '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id',
+                        rId_layout
+                    )
+
             self._resize_master_backgrounds(output_prs)
-            
-        except Exception as e:
+
+        except Exception:
             pass
 
     def _resize_master_backgrounds(self, prs) -> None:
@@ -452,34 +487,34 @@ class ContentReplayer:
                     try:
                         left = shape.left or Emu(0)
                         top = shape.top or Emu(0)
-                        
+
                         is_full_page = (
                             left <= Emu(1000) and
                             top <= Emu(1000)
                         )
-                        
+
                         if is_full_page:
                             shape.width = page_width
                             shape.height = page_height
                     except Exception:
                         continue
-                    
-                    for layout in master.slide_layouts:
-                        for layout_shape in layout.shapes:
-                            try:
-                                layout_left = layout_shape.left or Emu(0)
-                                layout_top = layout_shape.top or Emu(0)
-                                
-                                is_full_page = (
-                                    layout_left <= Emu(1000) and
-                                    layout_top <= Emu(1000)
-                                )
-                                
-                                if is_full_page:
-                                    layout_shape.width = page_width
-                                    layout_shape.height = page_height
-                            except Exception:
-                                continue
+
+                for layout in master.slide_layouts:
+                    for layout_shape in layout.shapes:
+                        try:
+                            layout_left = layout_shape.left or Emu(0)
+                            layout_top = layout_shape.top or Emu(0)
+
+                            is_full_page = (
+                                layout_left <= Emu(1000) and
+                                layout_top <= Emu(1000)
+                            )
+
+                            if is_full_page:
+                                layout_shape.width = page_width
+                                layout_shape.height = page_height
+                        except Exception:
+                            continue
             except Exception:
                 continue
 
@@ -546,9 +581,9 @@ class ContentReplayer:
         """
         # 1. 删除水印
         self._remove_watermarks_from_slide(slide)
-        
-        # 2. 识别并删除页脚占位符，应用模板页脚
-        self._remove_footer_placeholders(slide)
+
+        # 2. 删除原PPT页脚（占位符+普通文本框/图片），然后应用模板页脚
+        self._remove_original_footer(slide)
         self._apply_template_footer(slide)
         
         # 3. 应用背景（基于目标模板）
@@ -560,21 +595,36 @@ class ContentReplayer:
         # 5. 检查并修复溢出
         self._check_and_fix_overflow(slide)
 
-    def _remove_footer_placeholders(self, slide) -> None:
-        """识别并删除页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）"""
-        header_footer_types = (13, 14, 15, 16)
-        
+    def _remove_original_footer(self, slide) -> None:
+        """删除原PPT的页脚元素（包括占位符和普通文本框/图片）
+
+        删除底部区域（>82%页面高度）的所有页脚相关元素：
+        - 页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）
+        - 底部区域的文本框（如版权信息）
+        - 底部区域的图片（如图标）
+        """
+        footer_threshold = self.target_height * 0.82
+
         indices_to_remove = []
-        
+
         for i, shape in enumerate(slide.shapes):
             try:
+                # 检查是否是页脚占位符
                 if shape.is_placeholder:
                     phf = shape.placeholder_format
-                    if phf.type in header_footer_types:
+                    if phf.type in (13, 14, 15, 16):
+                        indices_to_remove.append(i)
+                        continue
+
+                # 检查是否是底部区域的文本框或图片
+                top = shape.top or Emu(0)
+                if top > footer_threshold:
+                    from pptx.enum.shapes import MSO_SHAPE_TYPE
+                    if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
                         indices_to_remove.append(i)
             except Exception:
                 continue
-        
+
         for i in reversed(indices_to_remove):
             try:
                 shape = slide.shapes[i]
@@ -584,22 +634,32 @@ class ContentReplayer:
                 continue
 
     def _apply_template_footer(self, slide) -> None:
-        """完全应用模板的页脚定义"""
+        """完全应用模板的页脚定义，保持相对边距（右下角对齐）"""
         if not self.footer_shapes:
             return
-        
+
         try:
             for footer_info in self.footer_shapes:
                 try:
                     from pptx.enum.shapes import MSO_SHAPE_TYPE
                     from io import BytesIO
-                    
+
                     shape_type = footer_info.get("type")
-                    left = footer_info.get("left", Emu(0))
-                    top = footer_info.get("top", Emu(0))
                     width = footer_info.get("width", Emu(3048000))
                     height = footer_info.get("height", Emu(406400))
-                    
+
+                    # 根据 right_margin 和 bottom_margin 重新计算位置
+                    # 保持相对边距，确保图标/文本始终在右下角
+                    right_margin = footer_info.get("right_margin")
+                    bottom_margin = footer_info.get("bottom_margin")
+
+                    if right_margin is not None and bottom_margin is not None:
+                        left = self.target_width - width - right_margin
+                        top = self.target_height - height - bottom_margin
+                    else:
+                        left = footer_info.get("left", Emu(0))
+                        top = footer_info.get("top", Emu(0))
+
                     if shape_type == MSO_SHAPE_TYPE.PICTURE:
                         image_blob = footer_info.get("image_blob")
                         if image_blob:
@@ -623,7 +683,7 @@ class ContentReplayer:
                                 font_size = footer_info.get("font_size", Pt(10))
                                 font_color = footer_info.get("font_color")
                                 font_bold = footer_info.get("font_bold")
-                                
+
                                 para = textbox.text_frame.paragraphs[0]
                                 if para.runs:
                                     run = para.runs[0]
