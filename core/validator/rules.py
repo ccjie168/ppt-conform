@@ -39,14 +39,27 @@ class WatermarkTextRule(ValidationRule):
             for shape in slide.shapes:
                 if shape.has_text_frame:
                     text = shape.text
+                    text_stripped = text.strip()
                     for keyword in self.keywords:
                         if keyword in text:
-                            issues.append(ValidationIssue(
-                                level=self.level,
-                                rule_id=self.rule_id,
-                                message=f"发现水印文本: {keyword}",
-                                slide_index=slide_idx
-                            ))
+                            # 区分水印和业务内容
+                            # 水印通常是独立的短文本，如果文本远长于关键词，很可能是正文内容
+                            if len(text_stripped) <= len(keyword) + 10:
+                                issues.append(ValidationIssue(
+                                    level=self.level,
+                                    rule_id=self.rule_id,
+                                    message=f"发现水印文本: {keyword}",
+                                    slide_index=slide_idx + 1
+                                ))
+                            else:
+                                # 长文本：只有当关键词占文本比例超过50%才判定为水印
+                                if len(keyword) / len(text_stripped) > 0.5:
+                                    issues.append(ValidationIssue(
+                                        level=self.level,
+                                        rule_id=self.rule_id,
+                                        message=f"发现水印文本: {keyword}",
+                                        slide_index=slide_idx + 1
+                                    ))
 
         return issues
 
