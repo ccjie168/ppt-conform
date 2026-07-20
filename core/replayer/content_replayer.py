@@ -891,12 +891,16 @@ class ContentReplayer:
 
     def _convert_placeholder_style(self, shape, title_font: str, body_font: str,
                                      title_color: str, body_color: str) -> None:
-        """有占位符定义的组件：完全应用目标模板样式（字体和颜色）"""
+        """有占位符定义的组件：应用目标模板样式
+        
+        规则：
+        - 标题：字体改模板字体，颜色保持原样
+        - 正文：字体改模板字体，颜色改为模板定义的颜色
+        """
         try:
             phf = shape.placeholder_format
             is_title = phf.type in (1, 3)  # TITLE or CENTER_TITLE
             target_font = title_font if is_title else body_font
-            target_color = title_color if is_title else body_color
             
             tf = shape.text_frame
             for paragraph in tf.paragraphs:
@@ -904,24 +908,18 @@ class ContentReplayer:
                     if run.text.strip():
                         run.font.name = target_font
                         run.font._element.set('eastAsian', target_font)
-                        try:
-                            run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
-                        except Exception:
-                            pass
+                        if not is_title:
+                            try:
+                                run.font.color.rgb = RGBColor.from_string(body_color.lstrip("#"))
+                            except Exception:
+                                pass
         except Exception:
             pass
 
     def _convert_non_placeholder_with_bg(self, shape, title_font: str, body_font: str,
                                           title_color: str, body_color: str) -> None:
-        """无占位符但有背景颜色的组件：字体转模板字体，颜色根据元素自身背景色应用color pairing
-
-        规则：
-        - 字体统一改成模板字体
-        - 颜色：根据元素自身背景色的深浅来选择，避免文字颜色与元素背景色相近
-        """
+        """无占位符但有背景颜色的组件：字体转模板字体，颜色保持原样"""
         try:
-            bg_is_dark = self._detect_shape_background_darkness(shape)
-            
             tf = shape.text_frame
             for paragraph in tf.paragraphs:
                 for run in paragraph.runs:
@@ -929,33 +927,11 @@ class ContentReplayer:
                         font_size = run.font.size
                         is_bold = run.font.bold
                         is_title = font_size and font_size >= Pt(24) or is_bold
-                        
                         target_font = title_font if is_title else body_font
-                        target_color = title_color if is_title else body_color
                         
                         run.font.name = target_font
                         run.font._element.set('eastAsian', target_font)
-                        
-                        try:
-                            original_color = None
-                            if run.font.color and run.font.color.rgb:
-                                original_color = str(run.font.color.rgb).upper()
-                            
-                            if original_color and self._color_has_enough_contrast_with_shape(original_color, shape):
-                                pass
-                            else:
-                                if bg_is_dark:
-                                    run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
-                                else:
-                                    run.font.color.rgb = RGBColor.from_string(body_color.lstrip("#"))
-                        except Exception:
-                            try:
-                                if bg_is_dark:
-                                    run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
-                                else:
-                                    run.font.color.rgb = RGBColor.from_string(body_color.lstrip("#"))
-                            except Exception:
-                                pass
+                        # 颜色保持原样
         except Exception:
             pass
 
@@ -989,12 +965,7 @@ class ContentReplayer:
     def _convert_non_placeholder_no_bg(self, shape, title_font: str, body_font: str,
                                           title_color: str, body_color: str,
                                           bg_is_dark: bool = True) -> None:
-        """无占位符且无背景颜色的组件：字体改模板字体，颜色尽量保留原色（不违反color pairing时）
-
-        规则：
-        - 字体统一改成模板字体
-        - 颜色：如果原颜色与幻灯片背景对比度足够（不违反color pairing），保留原色；否则用color pairing颜色
-        """
+        """无占位符且无背景颜色的组件：字体改模板字体，颜色保持原样"""
         try:
             tf = shape.text_frame
             for paragraph in tf.paragraphs:
@@ -1005,25 +976,10 @@ class ContentReplayer:
                         is_title = font_size and font_size >= Pt(24) or is_bold
                         
                         target_font = title_font if is_title else body_font
-                        fallback_color = title_color if is_title else body_color
                         
                         run.font.name = target_font
                         run.font._element.set('eastAsian', target_font)
-                        
-                        try:
-                            original_color = None
-                            if run.font.color and run.font.color.rgb:
-                                original_color = str(run.font.color.rgb).upper()
-                            
-                            if original_color and self._color_has_enough_contrast(original_color, bg_is_dark):
-                                pass
-                            else:
-                                run.font.color.rgb = RGBColor.from_string(fallback_color.lstrip("#"))
-                        except Exception:
-                            try:
-                                run.font.color.rgb = RGBColor.from_string(fallback_color.lstrip("#"))
-                            except Exception:
-                                pass
+                        # 颜色保持原样
         except Exception:
             pass
 
