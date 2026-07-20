@@ -7,6 +7,8 @@ master_styles:
     background_color: "#FFFFFF"
     text_color: "#333333"
     body_text_color: "#555555"
+    title_font: "Arial"
+    body_font: "Arial"
     accent_color: "#2196F3"
     description: "简约白色背景，适合商务演示"
 
@@ -15,6 +17,8 @@ master_styles:
     background_color: "#E8F5E9"
     text_color: "#1B5E20"
     body_text_color: "#2E7D32"
+    title_font: "Arial"
+    body_font: "Arial"
     accent_color: "#4CAF50"
     description: "清新浅绿色背景，适合环保、自然主题"
 
@@ -23,6 +27,8 @@ master_styles:
     background_color: "#1B5E20"
     text_color: "#FFFFFF"
     body_text_color: "#E8F5E9"
+    title_font: "Arial"
+    body_font: "Arial"
     accent_color: "#3DCD58"
     description: "深绿色商务风格，适合专业演示"
 
@@ -35,5 +41,7 @@ master_styles:
       direction: "vertical"
     text_color: "#FFFFFF"
     body_text_color: "#BBDEFB"
+    title_font: "Arial"
+    body_font: "Arial"
     accent_color: "#42A5F5"
     description: "科技感渐变背景，适合创新、技术主题"

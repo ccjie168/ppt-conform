@@ -62,6 +62,8 @@ class StyleAdapter:
                 "title_color": style_config.get("text_color", "FFFFFF"),
                 "body_color": style_config.get("body_text_color", "E0E0E0"),
                 "accent_color": style_config.get("accent_color", "3DCD58"),
+                "title_font": style_config.get("title_font", "Arial"),
+                "body_font": style_config.get("body_font", "Arial"),
             }
             self.footer_config = {
                 "font_name": "Calibri",
@@ -110,10 +112,13 @@ class StyleAdapter:
         # 3. 修改背景色
         self._apply_background(slide)
         
-        # 4. 根据位置调整文字颜色
+        # 4. 统一字体（新增）
+        self._unify_fonts(slide)
+        
+        # 5. 根据位置调整文字颜色
         self._adjust_text_colors(slide)
         
-        # 5. 修改强调色（边框、装饰元素）
+        # 6. 修改强调色（边框、装饰元素）
         self._apply_accent_colors(slide)
     
     def _remove_watermarks(self, slide):
@@ -165,6 +170,42 @@ class StyleAdapter:
             self._apply_solid_background(slide)
         elif bg_type == "radial":
             self._apply_radial_background(slide)
+    
+    def _unify_fonts(self, slide):
+        """统一字体 - 将所有文字统一为模板定义的字体
+        
+        规则：
+        - 标题（字号>=24或加粗）→ 使用标题字体
+        - 正文（其他）→ 使用正文字体
+        """
+        if not self.text_color_rules:
+            return
+        
+        title_font = self.text_color_rules.get("title_font", "Arial")
+        body_font = self.text_color_rules.get("body_font", "Arial")
+        
+        for shape in slide.shapes:
+            if not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
+                continue
+            
+            tf = shape.text_frame
+            
+            for paragraph in tf.paragraphs:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        # 判断是否是标题（字号大或加粗）
+                        font_size = run.font.size
+                        is_bold = run.font.bold
+                        
+                        if font_size and font_size >= Pt(24) or is_bold:
+                            target_font = title_font
+                        else:
+                            target_font = body_font
+                        
+                        # 设置字体
+                        run.font.name = target_font
+                        # 同时设置东亚字体（中文）
+                        run.font._element.set('eastAsian', target_font)
     
     def _remove_full_page_background(self, slide):
         """删除铺满整页的背景矩形
