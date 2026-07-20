@@ -6,6 +6,7 @@ master_styles:
     name: "白色简约"
     background_color: "#FFFFFF"
     text_color: "#333333"
+    body_text_color: "#555555"
     accent_color: "#2196F3"
     description: "简约白色背景，适合商务演示"
 
@@ -13,6 +14,7 @@ master_styles:
     name: "浅绿色清新"
     background_color: "#E8F5E9"
     text_color: "#1B5E20"
+    body_text_color: "#2E7D32"
     accent_color: "#4CAF50"
     description: "清新浅绿色背景，适合环保、自然主题"
 
@@ -32,5 +34,6 @@ master_styles:
       end_color: "#0D47A1"
       direction: "vertical"
     text_color: "#FFFFFF"
+    body_text_color: "#BBDEFB"
     accent_color: "#42A5F5"
     description: "科技感渐变背景，适合创新、技术主题"
