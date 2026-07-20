@@ -717,14 +717,14 @@ class ContentReplayer:
     def _remove_original_footer(self, slide) -> None:
         """删除原PPT的页脚元素（包括占位符、文本框、图片、自选图形、组）
 
-        删除底部区域（>70%页面高度）的所有页脚相关元素：
+        删除底部区域（>85%页面高度）的所有页脚相关元素：
         - 页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）
         - 底部区域的文本框（如版权信息）
         - 底部区域的图片（如图标）
         - 底部区域带文本的自选图形
         - 底部区域的组形状
         """
-        footer_threshold = self.target_height * 0.70
+        footer_threshold = self.target_height * 0.85
 
         indices_to_remove = self._collect_footer_indices(slide.shapes, footer_threshold)
 
@@ -739,7 +739,7 @@ class ContentReplayer:
     def _remove_master_footer_elements(self, prs) -> None:
         """删除母版中的页脚元素，确保原PPT的页脚不影响输出"""
         page_height = prs.slide_height
-        footer_threshold = page_height * 0.70
+        footer_threshold = page_height * 0.85
 
         for master in prs.slide_masters:
             indices_to_remove = self._collect_footer_indices(master.shapes, footer_threshold)
@@ -866,8 +866,8 @@ class ContentReplayer:
                 # 规则2：没有占位符定义的组件 → 按是否有背景色分别处理
                 has_bg_color = self._shape_has_background_color(shape)
                 if has_bg_color:
-                    # a) 本身有背景颜色的 → 字体转模板字体，颜色不变
-                    self._convert_non_placeholder_with_bg(shape, title_font, body_font)
+                    # a) 本身有背景颜色的 → 字体转模板字体，颜色根据自身背景色应用color pairing
+                    self._convert_non_placeholder_with_bg(shape, title_font, body_font, template_title_color, template_body_color)
                 else:
                     # b) 本身没有背景颜色的 → 字体改模板字体，颜色尽量保留原色（不违反color pairing时）
                     self._convert_non_placeholder_no_bg(shape, title_font, body_font, template_title_color, template_body_color, bg_is_dark)
@@ -911,9 +911,17 @@ class ContentReplayer:
         except Exception:
             pass
 
-    def _convert_non_placeholder_with_bg(self, shape, title_font: str, body_font: str) -> None:
-        """无占位符但有背景颜色的组件：字体转模板字体，颜色不变"""
+    def _convert_non_placeholder_with_bg(self, shape, title_font: str, body_font: str,
+                                          title_color: str, body_color: str) -> None:
+        """无占位符但有背景颜色的组件：字体转模板字体，颜色根据元素自身背景色应用color pairing
+
+        规则：
+        - 字体统一改成模板字体
+        - 颜色：根据元素自身背景色的深浅来选择，避免文字颜色与元素背景色相近
+        """
         try:
+            bg_is_dark = self._detect_shape_background_darkness(shape)
+            
             tf = shape.text_frame
             for paragraph in tf.paragraphs:
                 for run in paragraph.runs:
@@ -921,13 +929,62 @@ class ContentReplayer:
                         font_size = run.font.size
                         is_bold = run.font.bold
                         is_title = font_size and font_size >= Pt(24) or is_bold
+                        
                         target_font = title_font if is_title else body_font
+                        target_color = title_color if is_title else body_color
                         
                         run.font.name = target_font
                         run.font._element.set('eastAsian', target_font)
-                        # 颜色保持不变
+                        
+                        try:
+                            original_color = None
+                            if run.font.color and run.font.color.rgb:
+                                original_color = str(run.font.color.rgb).upper()
+                            
+                            if original_color and self._color_has_enough_contrast_with_shape(original_color, shape):
+                                pass
+                            else:
+                                if bg_is_dark:
+                                    run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
+                                else:
+                                    run.font.color.rgb = RGBColor.from_string(body_color.lstrip("#"))
+                        except Exception:
+                            try:
+                                if bg_is_dark:
+                                    run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
+                                else:
+                                    run.font.color.rgb = RGBColor.from_string(body_color.lstrip("#"))
+                            except Exception:
+                                pass
         except Exception:
             pass
+
+    def _detect_shape_background_darkness(self, shape) -> bool:
+        """检测形状自身背景色是否为深色"""
+        try:
+            fill_type = shape.fill.type
+            if fill_type == 1:  # solid fill
+                fill_color = str(shape.fill.fore_color.rgb).upper()
+                if fill_color and fill_color != "NONE":
+                    return self._is_dark_color(fill_color)
+            elif fill_type == 2:  # gradient
+                try:
+                    colors = [str(s.color.rgb).upper() for s in shape.fill.gradient.stops]
+                    dark_count = sum(1 for c in colors if c and c != "NONE" and self._is_dark_color(c))
+                    return dark_count >= len(colors) / 2
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return True
+
+    def _color_has_enough_contrast_with_shape(self, hex_color: str, shape) -> bool:
+        """判断文字颜色与形状自身背景色是否有足够对比度"""
+        try:
+            bg_is_dark = self._detect_shape_background_darkness(shape)
+            return self._color_has_enough_contrast(hex_color, bg_is_dark)
+        except Exception:
+            return False
 
     def _convert_non_placeholder_no_bg(self, shape, title_font: str, body_font: str,
                                           title_color: str, body_color: str,
