@@ -385,95 +385,138 @@ class ContentReplayer:
     def _copy_selected_master_to_output(self, output_prs, selected_master_index: int) -> None:
         """从目标模板只复制选中的母版和版式到输出PPT，保留原母版
 
-        技术适配模式：
-        1. 保留原PPT的母版结构（原母版可见）
-        2. 从目标模板只复制选中的母版和版式（其他3个母版/版式不带入）
-        3. 母版背景尺寸与页面尺寸匹配，确保覆盖整个页面
+        使用zipfile直接操作PPTX文件（本质是ZIP压缩包），
+        因为python-pptx的Package对象没有create_part方法。
         """
         if not self.template_path or not Path(self.template_path).exists():
             return
 
         try:
-            template_prs = Presentation(self.template_path)
+            import zipfile
+            import tempfile
+            from lxml import etree
 
+            template_prs = Presentation(self.template_path)
             if selected_master_index >= len(template_prs.slide_masters):
                 return
 
             template_master = template_prs.slide_masters[selected_master_index]
 
-            from lxml import etree
-            presentation_elem = output_prs.part._element
-            nsmap_p = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main'}
-            ns_rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+            temp_path = '/tmp/tmp_output_for_master.pptx'
+            output_prs.save(temp_path)
 
-            sld_master_id_lst = presentation_elem.find('.//p:sldMasterIdLst', nsmap_p)
-            if sld_master_id_lst is None:
-                sld_master_id_lst = etree.SubElement(
-                    presentation_elem,
-                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterIdLst'
+            with tempfile.NamedTemporaryFile(suffix='.pptx', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            with zipfile.ZipFile(temp_path, 'r') as src_zip, \
+                 zipfile.ZipFile(tmp_path, 'w') as dst_zip:
+
+                master_xml_bytes = template_master.part.blob
+                new_master_idx = len(output_prs.slide_masters) + 1
+                master_filename = 'ppt/slideMasters/slideMaster%d.xml' % new_master_idx
+
+                layout_counter = 1
+                for item in src_zip.infolist():
+                    if 'ppt/slideLayouts/slideLayout' in item.filename:
+                        layout_counter += 1
+
+                presentation_xml = src_zip.read('ppt/presentation.xml')
+                presentation_elem = etree.fromstring(presentation_xml)
+                nsmap_p = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main'}
+                ns_rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+                sld_master_id_lst = presentation_elem.find('.//p:sldMasterIdLst', nsmap_p)
+                if sld_master_id_lst is None:
+                    sld_master_id_lst = etree.SubElement(
+                        presentation_elem,
+                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterIdLst'
+                    )
+
+                rId_master = 'rId%d' % (100 + new_master_idx)
+                new_master_elem = etree.SubElement(
+                    sld_master_id_lst,
+                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterId'
                 )
+                new_master_elem.set('{%s}id' % ns_rels, rId_master)
 
-            template_master_part = template_master.part
-            master_xml_bytes = template_master_part.blob
-
-            new_master_idx = len(output_prs.slide_masters) + 1
-            new_master_part = output_prs.part._package.create_part(
-                '/ppt/slideMasters/slideMaster%d.xml' % new_master_idx,
-                'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml',
-                master_xml_bytes
-            )
-
-            rId = output_prs.part.relate_to(
-                new_master_part,
-                'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster'
-            )
-
-            new_master_elem = etree.SubElement(
-                sld_master_id_lst,
-                '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterId'
-            )
-            new_master_elem.set('{%s}id' % ns_rels, rId)
-
-            master_xml = new_master_part._element
-            sld_layout_id_lst = master_xml.find('.//p:sldLayoutIdLst', nsmap_p)
-
-            if sld_layout_id_lst is not None:
-                for child in list(sld_layout_id_lst):
-                    sld_layout_id_lst.remove(child)
-            else:
-                sld_layout_id_lst = etree.SubElement(
-                    master_xml.find('.//p:timing', nsmap_p),
-                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutIdLst'
-                )
-                if sld_layout_id_lst is None:
+                master_elem = etree.fromstring(master_xml_bytes)
+                sld_layout_id_lst = master_elem.find('.//p:sldLayoutIdLst', nsmap_p)
+                if sld_layout_id_lst is not None:
+                    for child in list(sld_layout_id_lst):
+                        sld_layout_id_lst.remove(child)
+                else:
                     sld_layout_id_lst = etree.SubElement(
-                        master_xml,
+                        master_elem,
                         '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutIdLst'
                     )
 
-            for layout in template_master.slide_layouts:
-                layout_part = layout.part
-                layout_xml_bytes = layout_part.blob
+                layout_idx = layout_counter
+                for _ in template_master.slide_layouts:
+                    rId_layout = 'rId%d' % (200 + layout_idx)
+                    new_layout_elem = etree.SubElement(
+                        sld_layout_id_lst,
+                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId'
+                    )
+                    new_layout_elem.set('{%s}id' % ns_rels, rId_layout)
+                    layout_idx += 1
 
-                new_layout_idx = len(output_prs.slide_layouts) + 1
-                new_layout_part = output_prs.part._package.create_part(
-                    '/ppt/slideLayouts/slideLayout%d.xml' % new_layout_idx,
-                    'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
-                    layout_xml_bytes
+                rels_data = src_zip.read('ppt/_rels/presentation.xml.rels')
+                rels_elem = etree.fromstring(rels_data)
+                ns_rels_def = 'http://schemas.openxmlformats.org/package/2006/relationships'
+
+                new_rel = etree.SubElement(
+                    rels_elem,
+                    '{%s}Relationship' % ns_rels_def
                 )
+                new_rel.set('Id', rId_master)
+                new_rel.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster')
+                new_rel.set('Target', 'slideMasters/slideMaster%d.xml' % new_master_idx)
 
-                rId_layout = new_master_part.relate_to(
-                    new_layout_part,
-                    'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout'
-                )
+                layout_idx = layout_counter
+                layout_filenames = []
+                for layout in template_master.slide_layouts:
+                    layout_xml_bytes = layout.part.blob
+                    layout_filename = 'ppt/slideLayouts/slideLayout%d.xml' % layout_idx
+                    layout_filenames.append(layout_filename)
+                    layout_idx += 1
 
-                new_layout_elem = etree.SubElement(
-                    sld_layout_id_lst,
-                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId'
-                )
-                new_layout_elem.set('{%s}id' % ns_rels, rId_layout)
+                for item in src_zip.infolist():
+                    data = src_zip.read(item.filename)
 
-            self._resize_master_backgrounds(output_prs)
+                    if item.filename == 'ppt/presentation.xml':
+                        data = etree.tostring(presentation_elem, pretty_print=True)
+                    elif item.filename == 'ppt/_rels/presentation.xml.rels':
+                        data = etree.tostring(rels_elem, pretty_print=True)
+
+                    dst_zip.writestr(item.filename, data)
+
+                dst_zip.writestr(master_filename, etree.tostring(master_elem, pretty_print=True))
+
+                layout_idx = layout_counter
+                for layout in template_master.slide_layouts:
+                    layout_xml_bytes = layout.part.blob
+                    layout_filename = 'ppt/slideLayouts/slideLayout%d.xml' % layout_idx
+                    dst_zip.writestr(layout_filename, layout_xml_bytes)
+                    layout_idx += 1
+
+                master_rels_path = 'ppt/slideMasters/_rels/slideMaster%d.xml.rels' % new_master_idx
+                layout_idx = layout_counter
+                rels_elem = etree.Element('{%s}Relationships' % ns_rels_def)
+
+                for _ in template_master.slide_layouts:
+                    rId_layout = 'rId%d' % (200 + layout_idx)
+                    new_rel = etree.SubElement(
+                        rels_elem,
+                        '{%s}Relationship' % ns_rels_def
+                    )
+                    new_rel.set('Id', rId_layout)
+                    new_rel.set('Type', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout')
+                    new_rel.set('Target', '../slideLayouts/slideLayout%d.xml' % layout_idx)
+                    layout_idx += 1
+
+                dst_zip.writestr(master_rels_path, etree.tostring(rels_elem, pretty_print=True))
+
+            output_prs.__init__(tmp_path)
 
         except Exception:
             pass
