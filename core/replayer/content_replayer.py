@@ -894,13 +894,14 @@ class ContentReplayer:
         """有占位符定义的组件：应用目标模板样式
         
         规则：
-        - 标题：字体改模板字体，颜色保持原样
+        - 标题：字体改模板字体，颜色从模板主题色中提取（浅色背景用dk2深色，深色背景用lt1浅色）
         - 正文：字体改模板字体，颜色改为模板定义的颜色
         """
         try:
             phf = shape.placeholder_format
             is_title = phf.type in (1, 3)  # TITLE or CENTER_TITLE
             target_font = title_font if is_title else body_font
+            target_color = title_color if is_title else body_color
             
             tf = shape.text_frame
             for paragraph in tf.paragraphs:
@@ -908,11 +909,10 @@ class ContentReplayer:
                     if run.text.strip():
                         run.font.name = target_font
                         run.font._element.set('eastAsian', target_font)
-                        if not is_title:
-                            try:
-                                run.font.color.rgb = RGBColor.from_string(body_color.lstrip("#"))
-                            except Exception:
-                                pass
+                        try:
+                            run.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
+                        except Exception:
+                            pass
         except Exception:
             pass
 
