@@ -836,7 +836,8 @@ class ContentReplayer:
         
         规则：
         1. 有占位符定义的组件（标题、副标题、正文等）→ 完全应用目标模板样式
-        2. 没有占位符定义的组件（text box, shape等）→ 分两种情况处理
+        2. 页脚位置内的元素（占位符和非占位符）→ 应用模板页脚定义的颜色
+        3. 没有占位符定义的组件（text box, shape等）→ 字体改模板字体，颜色保持原样
         """
         if not self.template_title_font and not self.template_body_font:
             return
@@ -844,7 +845,6 @@ class ContentReplayer:
         title_font = self.template_title_font or "Arial"
         body_font = self.template_body_font or "Arial"
         
-        # 检测背景深浅用于color pairing
         bg_is_dark = self._detect_slide_background_darkness(slide)
         if bg_is_dark:
             template_title_color = self.title_text_color or "FFFFFF"
@@ -853,24 +853,54 @@ class ContentReplayer:
             template_title_color = "333333"
             template_body_color = "555555"
         
+        footer_threshold = self.target_height * 0.85
+        
         for shape in slide.shapes:
             if not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
                 continue
             
+            is_footer_region = self._is_shape_in_footer_region(shape, footer_threshold)
             is_placeholder = self._is_content_placeholder(shape)
             
             if is_placeholder:
                 # 规则1：有占位符定义的组件 → 完全应用目标模板样式（字体和颜色）
                 self._convert_placeholder_style(shape, title_font, body_font, template_title_color, template_body_color)
+            elif is_footer_region:
+                # 规则2：页脚位置内的元素 → 应用模板定义的颜色
+                self._convert_footer_style(shape, body_font, template_body_color)
             else:
-                # 规则2：没有占位符定义的组件 → 按是否有背景色分别处理
+                # 规则3：没有占位符定义的组件 → 字体改模板字体，颜色保持原样
                 has_bg_color = self._shape_has_background_color(shape)
                 if has_bg_color:
-                    # a) 本身有背景颜色的 → 字体转模板字体，颜色根据自身背景色应用color pairing
                     self._convert_non_placeholder_with_bg(shape, title_font, body_font, template_title_color, template_body_color)
                 else:
-                    # b) 本身没有背景颜色的 → 字体改模板字体，颜色尽量保留原色（不违反color pairing时）
                     self._convert_non_placeholder_no_bg(shape, title_font, body_font, template_title_color, template_body_color, bg_is_dark)
+
+    def _is_shape_in_footer_region(self, shape, footer_threshold) -> bool:
+        """判断形状是否位于页脚区域（底部15%）"""
+        try:
+            top = shape.top or Emu(0)
+            height = shape.height or Emu(0)
+            bottom = top + height
+            return top > footer_threshold or bottom > footer_threshold
+        except Exception:
+            return False
+
+    def _convert_footer_style(self, shape, font: str, color: str) -> None:
+        """页脚位置内的元素：应用模板定义的字体和颜色"""
+        try:
+            tf = shape.text_frame
+            for paragraph in tf.paragraphs:
+                for run in paragraph.runs:
+                    if run.text.strip():
+                        run.font.name = font
+                        run.font._element.set('eastAsian', font)
+                        try:
+                            run.font.color.rgb = RGBColor.from_string(color.lstrip("#"))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     def _is_content_placeholder(self, shape) -> bool:
         """判断是否是内容占位符（标题、副标题、正文等）
