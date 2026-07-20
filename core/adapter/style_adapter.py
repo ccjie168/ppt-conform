@@ -49,7 +49,15 @@ class StyleAdapter:
         # 获取模板配置
         style_config = self.registry.get_master_style(self.master_style)
         if style_config:
-            self.background_config = style_config.get("background", {})
+            # 处理背景配置（支持background对象或background_color字符串）
+            bg_config = style_config.get("background", {})
+            if not bg_config and style_config.get("background_color"):
+                bg_config = {
+                    "type": "solid",
+                    "color": style_config["background_color"]
+                }
+            self.background_config = bg_config
+            
             self.text_color_rules = {
                 "title_color": style_config.get("text_color", "FFFFFF"),
                 "body_color": style_config.get("body_text_color", "E0E0E0"),
@@ -298,7 +306,7 @@ class StyleAdapter:
         bg_shape.zorder = 0
     
     def _adjust_text_colors(self, slide):
-        """根据文字位置调整颜色
+        """根据文字位置调整颜色 - 直接在XML层面修改确保生效
         
         规则：
         - 文字框压在浅色卡片上 → 保持深色（或根据卡片颜色调整）
@@ -337,11 +345,6 @@ class StyleAdapter:
             if not hasattr(shape, 'has_text_frame') or not shape.has_text_frame:
                 continue
             
-            # 跳过页眉页脚区域的文字
-            top = shape.top or Emu(0)
-            if top < self.header_threshold:
-                continue
-            
             text_left = shape.left or Emu(0)
             text_top = shape.top or Emu(0)
             text_width = shape.width or Emu(0)
@@ -359,21 +362,33 @@ class StyleAdapter:
                     break
             
             # 根据位置调整文字颜色
-            for paragraph in shape.text_frame.paragraphs:
+            # 先设置shape级别的默认颜色
+            tf = shape.text_frame
+            self._set_xml_font_color(tf._element, "FFFFFF" if not on_light_card else "333333")
+            
+            for paragraph in tf.paragraphs:
+                # 修改paragraph级别的默认颜色
+                self._set_xml_font_color(paragraph._p, "FFFFFF" if not on_light_card else "333333")
+                
                 for run in paragraph.runs:
                     if run.text.strip():
                         if on_light_card:
-                            # 在浅色卡片上：保持深色或使用模板正文字色
-                            self._set_font_color(run.font, self.text_color_rules["body_color"])
+                            # 在浅色卡片上：保持深色
+                            target_color = "333333"
                         else:
                             # 在深色背景上：改为浅色
                             # 判断是否是标题（字号大或加粗）
                             font_size = run.font.size
                             is_bold = run.font.bold
                             if font_size and font_size >= Pt(24) or is_bold:
-                                self._set_font_color(run.font, self.text_color_rules["title_color"])
+                                target_color = self.text_color_rules["title_color"]
                             else:
-                                self._set_font_color(run.font, self.text_color_rules["body_color"])
+                                target_color = self.text_color_rules["body_color"]
+                        
+                        # 使用XML级别修改确保生效
+                        self._set_xml_font_color(run._r, target_color)
+                        # 同时用API修改
+                        self._set_font_color(run.font, target_color)
     
     def _apply_accent_colors(self, slide):
         """修改强调色（边框、装饰元素）"""
@@ -450,4 +465,60 @@ class StyleAdapter:
         try:
             font.color.rgb = RGBColor.from_string(hex_color.lstrip("#"))
         except:
+            pass
+    
+    def _set_xml_font_color(self, element, hex_color: str):
+        """在XML层面直接设置字体颜色，确保不被主题覆盖
+        
+        支持处理不同层级的元素：run(r), paragraph(p), text body(txBody)
+        """
+        try:
+            from lxml import etree
+            
+            ns_a = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+            nsmap = {'a': ns_a}
+            
+            tag = element.tag.split('}')[-1] if '}' in element.tag else element.tag
+            
+            if tag == 'r':
+                # run级别：直接设置rPr
+                rPr = element.find('a:rPr', nsmap)
+                if rPr is None:
+                    rPr = etree.SubElement(element, f'{{{ns_a}}}rPr')
+                target = rPr
+            elif tag == 'p':
+                # paragraph级别：设置pPr/defRPr
+                pPr = element.find('a:pPr', nsmap)
+                if pPr is None:
+                    pPr = etree.SubElement(element, f'{{{ns_a}}}pPr')
+                defRPr = pPr.find('a:defRPr', nsmap)
+                if defRPr is None:
+                    defRPr = etree.SubElement(pPr, f'{{{ns_a}}}defRPr')
+                target = defRPr
+            elif tag == 'txBody':
+                # text body级别：设置bodyPr/defPPr/defRPr
+                defPPr = element.find('a:defPPr', nsmap)
+                if defPPr is None:
+                    defPPr = etree.SubElement(element, f'{{{ns_a}}}defPPr')
+                defRPr = defPPr.find('a:defRPr', nsmap)
+                if defRPr is None:
+                    defRPr = etree.SubElement(defPPr, f'{{{ns_a}}}defRPr')
+                target = defRPr
+            else:
+                return
+            
+            # 移除现有的颜色设置
+            for color_tag in ['solidFill', 'noFill', 'gradFill', 'pattFill', 'blipFill']:
+                existing = target.find(f'a:{color_tag}', nsmap)
+                if existing is not None:
+                    target.remove(existing)
+            
+            # 创建solidFill
+            solidFill = etree.SubElement(target, f'{{{ns_a}}}solidFill')
+            
+            # 创建srgbClr
+            srgbClr = etree.SubElement(solidFill, f'{{{ns_a}}}srgbClr')
+            srgbClr.set('val', hex_color.lstrip('#').upper())
+            
+        except Exception:
             pass

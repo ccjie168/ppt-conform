@@ -20,7 +20,8 @@ master_styles:
     name: "深绿色商务"
     background_color: "#1B5E20"
     text_color: "#FFFFFF"
-    accent_color: "#81C784"
+    body_text_color: "#E8F5E9"
+    accent_color: "#3DCD58"
     description: "深绿色商务风格，适合专业演示"
 
   F4:
