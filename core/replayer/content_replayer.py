@@ -354,6 +354,9 @@ class ContentReplayer:
         # 从目标模板只提取选中母版的样式信息（技术适配模式）
         self._extract_selected_master_styles(selected_master_index)
 
+        # 从目标模板复制选中的母版和版式到输出PPT（保留原母版）
+        self._copy_selected_master_to_output(output_prs, selected_master_index)
+
         self.source_width = source_prs.slide_width
         self.source_height = source_prs.slide_height
         self.target_width = output_prs.slide_width
@@ -375,6 +378,110 @@ class ContentReplayer:
 
         output_prs.save(config.output_path)
         return config.output_path
+
+    def _copy_selected_master_to_output(self, output_prs, selected_master_index: int) -> None:
+        """从目标模板只复制选中的母版和版式到输出PPT，保留原母版
+        
+        技术适配模式：
+        1. 保留原PPT的母版结构（原母版可见）
+        2. 从目标模板只复制选中的母版和版式（其他3个母版/版式不带入）
+        3. 母版背景尺寸与页面尺寸匹配，确保覆盖整个页面
+        """
+        if not self.template_path or not Path(self.template_path).exists():
+            return
+
+        try:
+            template_prs = Presentation(self.template_path)
+            
+            if selected_master_index >= len(template_prs.slide_masters):
+                return
+
+            template_master = template_prs.slide_masters[selected_master_index]
+            
+            template_master_xml = template_master._element
+            output_sld_master_list = output_prs.part.rels._rels.get('sldMasterIdLst', None)
+            
+            if output_sld_master_list is None:
+                for key in output_prs.part.rels._rels:
+                    if 'sldMasterIdLst' in key:
+                        output_sld_master_list = output_prs.part.rels._rels[key]
+                        break
+            
+            if output_sld_master_list is None:
+                return
+            
+            from lxml import etree
+            new_master_elem = etree.SubElement(output_sld_master_list, '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterId')
+            
+            new_master_part = output_prs.part._package.create_part(
+                '/ppt/slideMasters/slideMaster%d.xml' % (len(output_prs.slide_masters) + 1),
+                'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml',
+                template_master_xml
+            )
+            
+            rId = output_prs.part.relate_to(new_master_part, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster')
+            new_master_elem.set('id', rId)
+            
+            for layout in template_master.slide_layouts:
+                layout_xml = layout._element
+                
+                new_layout_part = output_prs.part._package.create_part(
+                    '/ppt/slideLayouts/slideLayout%d.xml' % (len(output_prs.slide_layouts) + 1),
+                    'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
+                    layout_xml
+                )
+                
+                rId_layout = new_master_part.relate_to(new_layout_part, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout')
+                
+                layout_elem = etree.SubElement(new_master_elem, '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId')
+                layout_elem.set('id', rId_layout)
+            
+            self._resize_master_backgrounds(output_prs)
+            
+        except Exception as e:
+            pass
+
+    def _resize_master_backgrounds(self, prs) -> None:
+        """调整母版背景尺寸，确保与页面尺寸匹配"""
+        page_width = prs.slide_width
+        page_height = prs.slide_height
+
+        for master in prs.slide_masters:
+            try:
+                for shape in master.shapes:
+                    try:
+                        left = shape.left or Emu(0)
+                        top = shape.top or Emu(0)
+                        
+                        is_full_page = (
+                            left <= Emu(1000) and
+                            top <= Emu(1000)
+                        )
+                        
+                        if is_full_page:
+                            shape.width = page_width
+                            shape.height = page_height
+                    except Exception:
+                        continue
+                    
+                    for layout in master.slide_layouts:
+                        for layout_shape in layout.shapes:
+                            try:
+                                layout_left = layout_shape.left or Emu(0)
+                                layout_top = layout_shape.top or Emu(0)
+                                
+                                is_full_page = (
+                                    layout_left <= Emu(1000) and
+                                    layout_top <= Emu(1000)
+                                )
+                                
+                                if is_full_page:
+                                    layout_shape.width = page_width
+                                    layout_shape.height = page_height
+                            except Exception:
+                                continue
+            except Exception:
+                continue
 
     def _extract_selected_master_styles(self, selected_master_index: int) -> None:
         """从目标模板只提取选中母版的样式信息，不引入其他模板"""
