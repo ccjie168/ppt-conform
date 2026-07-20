@@ -850,8 +850,8 @@ class ContentReplayer:
             template_title_color = self.title_text_color or "FFFFFF"
             template_body_color = self.default_text_color or "E8F5E9"
         else:
-            template_title_color = "333333"
-            template_body_color = "555555"
+            template_title_color = self.title_text_color or "3DCD58"
+            template_body_color = self.default_text_color or "555555"
         
         footer_threshold = self.target_height * 0.85
         
