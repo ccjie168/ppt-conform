@@ -357,6 +357,9 @@ class ContentReplayer:
         # 从目标模板复制选中的母版和版式到输出PPT（保留原母版）
         self._copy_selected_master_to_output(output_prs, selected_master_index)
 
+        # 删除原PPT母版中的页脚元素，避免继承到幻灯片
+        self._remove_master_footer_elements(output_prs)
+
         self.source_width = source_prs.slide_width
         self.source_height = source_prs.slide_height
         self.target_width = output_prs.slide_width
@@ -398,16 +401,18 @@ class ContentReplayer:
 
             template_master = template_prs.slide_masters[selected_master_index]
 
-            # 获取 presentation.xml 中的 sldMasterIdLst
             from lxml import etree
             presentation_elem = output_prs.part._element
             nsmap_p = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main'}
+            ns_rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 
             sld_master_id_lst = presentation_elem.find('.//p:sldMasterIdLst', nsmap_p)
             if sld_master_id_lst is None:
-                return
+                sld_master_id_lst = etree.SubElement(
+                    presentation_elem,
+                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterIdLst'
+                )
 
-            # 复制母版 part（使用原始blob）
             template_master_part = template_master.part
             master_xml_bytes = template_master_part.blob
 
@@ -418,58 +423,55 @@ class ContentReplayer:
                 master_xml_bytes
             )
 
-            # 建立 presentation 与母版的关系
             rId = output_prs.part.relate_to(
                 new_master_part,
                 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster'
             )
 
-            # 添加到 sldMasterIdLst
             new_master_elem = etree.SubElement(
                 sld_master_id_lst,
                 '{http://schemas.openxmlformats.org/presentationml/2006/main}sldMasterId'
             )
-            new_master_elem.set(
-                '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id',
-                rId
-            )
+            new_master_elem.set('{%s}id' % ns_rels, rId)
 
-            # 处理版式
             master_xml = new_master_part._element
             sld_layout_id_lst = master_xml.find('.//p:sldLayoutIdLst', nsmap_p)
 
             if sld_layout_id_lst is not None:
-                # 清空现有的版式引用
                 for child in list(sld_layout_id_lst):
                     sld_layout_id_lst.remove(child)
-
-                # 复制每个版式
-                for layout in template_master.slide_layouts:
-                    layout_part = layout.part
-                    layout_xml_bytes = layout_part.blob
-
-                    new_layout_idx = len(output_prs.slide_layouts) + 1
-                    new_layout_part = output_prs.part._package.create_part(
-                        '/ppt/slideLayouts/slideLayout%d.xml' % new_layout_idx,
-                        'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
-                        layout_xml_bytes
+            else:
+                sld_layout_id_lst = etree.SubElement(
+                    master_xml.find('.//p:timing', nsmap_p),
+                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutIdLst'
+                )
+                if sld_layout_id_lst is None:
+                    sld_layout_id_lst = etree.SubElement(
+                        master_xml,
+                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutIdLst'
                     )
 
-                    # 建立母版与版式的关系
-                    rId_layout = new_master_part.relate_to(
-                        new_layout_part,
-                        'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout'
-                    )
+            for layout in template_master.slide_layouts:
+                layout_part = layout.part
+                layout_xml_bytes = layout_part.blob
 
-                    # 添加到 sldLayoutIdLst
-                    new_layout_elem = etree.SubElement(
-                        sld_layout_id_lst,
-                        '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId'
-                    )
-                    new_layout_elem.set(
-                        '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id',
-                        rId_layout
-                    )
+                new_layout_idx = len(output_prs.slide_layouts) + 1
+                new_layout_part = output_prs.part._package.create_part(
+                    '/ppt/slideLayouts/slideLayout%d.xml' % new_layout_idx,
+                    'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
+                    layout_xml_bytes
+                )
+
+                rId_layout = new_master_part.relate_to(
+                    new_layout_part,
+                    'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout'
+                )
+
+                new_layout_elem = etree.SubElement(
+                    sld_layout_id_lst,
+                    '{http://schemas.openxmlformats.org/presentationml/2006/main}sldLayoutId'
+                )
+                new_layout_elem.set('{%s}id' % ns_rels, rId_layout)
 
             self._resize_master_backgrounds(output_prs)
 
@@ -609,14 +611,12 @@ class ContentReplayer:
 
         for i, shape in enumerate(slide.shapes):
             try:
-                # 检查是否是页脚占位符
                 if shape.is_placeholder:
                     phf = shape.placeholder_format
                     if phf.type in (13, 14, 15, 16):
                         indices_to_remove.append(i)
                         continue
 
-                # 检查是否是底部区域的文本框或图片
                 top = shape.top or Emu(0)
                 if top > footer_threshold:
                     from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -632,6 +632,37 @@ class ContentReplayer:
                 sp.getparent().remove(sp)
             except Exception:
                 continue
+
+    def _remove_master_footer_elements(self, prs) -> None:
+        """删除母版中的页脚元素，确保原PPT的页脚不影响输出"""
+        page_height = prs.slide_height
+        footer_threshold = page_height * 0.82
+
+        for master in prs.slide_masters:
+            indices_to_remove = []
+            for i, shape in enumerate(master.shapes):
+                try:
+                    if shape.is_placeholder:
+                        phf = shape.placeholder_format
+                        if phf.type in (13, 14, 15, 16):
+                            indices_to_remove.append(i)
+                            continue
+
+                    top = shape.top or Emu(0)
+                    if top > footer_threshold:
+                        from pptx.enum.shapes import MSO_SHAPE_TYPE
+                        if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
+                            indices_to_remove.append(i)
+                except Exception:
+                    continue
+
+            for i in reversed(indices_to_remove):
+                try:
+                    shape = master.shapes[i]
+                    sp = shape._element
+                    sp.getparent().remove(sp)
+                except Exception:
+                    continue
 
     def _apply_template_footer(self, slide) -> None:
         """完全应用模板的页脚定义，保持相对边距（右下角对齐）"""
@@ -676,26 +707,40 @@ class ContentReplayer:
                             int(left), int(top), int(width), int(height)
                         )
                         text = footer_info.get("text", "")
-                        if text:
-                            textbox.text_frame.text = text
-                            try:
-                                font_name = footer_info.get("font_name", "Calibri")
-                                font_size = footer_info.get("font_size", Pt(10))
-                                font_color = footer_info.get("font_color")
-                                font_bold = footer_info.get("font_bold")
+                        
+                        font_name = footer_info.get("font_name", "Calibri")
+                        font_size = footer_info.get("font_size")
+                        font_color = footer_info.get("font_color")
+                        font_bold = footer_info.get("font_bold")
 
-                                para = textbox.text_frame.paragraphs[0]
-                                if para.runs:
-                                    run = para.runs[0]
-                                    run.font.name = font_name
-                                    if font_size:
-                                        run.font.size = font_size
-                                    if font_bold is not None:
-                                        run.font.bold = font_bold
-                                    if font_color:
-                                        run.font.color.rgb = font_color
-                            except Exception:
-                                pass
+                        if text:
+                            for paragraph in textbox.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    run.text = ""
+                            
+                            p = textbox.text_frame.paragraphs[0]
+                            run = p.add_run()
+                            run.text = text
+                            
+                            run.font.name = font_name
+                            if font_size:
+                                run.font.size = font_size
+                            if font_bold is not None:
+                                run.font.bold = font_bold
+                            if font_color:
+                                run.font.color.rgb = font_color
+                        else:
+                            if font_name or font_size or font_color or font_bold:
+                                p = textbox.text_frame.paragraphs[0]
+                                run = p.add_run()
+                                run.text = ""
+                                run.font.name = font_name
+                                if font_size:
+                                    run.font.size = font_size
+                                if font_bold is not None:
+                                    run.font.bold = font_bold
+                                if font_color:
+                                    run.font.color.rgb = font_color
                 except Exception:
                     continue
         except Exception:
