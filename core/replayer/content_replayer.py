@@ -671,12 +671,12 @@ class ContentReplayer:
     def _remove_original_footer(self, slide) -> None:
         """删除原PPT的页脚元素（包括占位符和普通文本框/图片）
 
-        删除底部区域（>82%页面高度）的所有页脚相关元素：
+        删除底部区域（>75%页面高度）的所有页脚相关元素：
         - 页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）
         - 底部区域的文本框（如版权信息）
         - 底部区域的图片（如图标）
         """
-        footer_threshold = self.target_height * 0.82
+        footer_threshold = self.target_height * 0.75
 
         indices_to_remove = []
 
@@ -707,7 +707,7 @@ class ContentReplayer:
     def _remove_master_footer_elements(self, prs) -> None:
         """删除母版中的页脚元素，确保原PPT的页脚不影响输出"""
         page_height = prs.slide_height
-        footer_threshold = page_height * 0.82
+        footer_threshold = page_height * 0.75
 
         for master in prs.slide_masters:
             indices_to_remove = []
@@ -779,8 +779,9 @@ class ContentReplayer:
                         )
                         text = footer_info.get("text", "")
                         
-                        font_name = footer_info.get("font_name", "Calibri")
-                        font_size = footer_info.get("font_size")
+                        # 强制使用 Poppins 6号字（Pt(6)）作为页脚字体
+                        font_name = "Poppins"
+                        font_size = Pt(6)
                         font_color = footer_info.get("font_color")
                         font_bold = footer_info.get("font_bold")
 
@@ -788,30 +789,27 @@ class ContentReplayer:
                             for paragraph in textbox.text_frame.paragraphs:
                                 for run in paragraph.runs:
                                     run.text = ""
-                            
+
                             p = textbox.text_frame.paragraphs[0]
                             run = p.add_run()
                             run.text = text
-                            
+
                             run.font.name = font_name
-                            if font_size:
-                                run.font.size = font_size
+                            run.font.size = font_size
                             if font_bold is not None:
                                 run.font.bold = font_bold
                             if font_color:
                                 run.font.color.rgb = font_color
                         else:
-                            if font_name or font_size or font_color or font_bold:
-                                p = textbox.text_frame.paragraphs[0]
-                                run = p.add_run()
-                                run.text = ""
-                                run.font.name = font_name
-                                if font_size:
-                                    run.font.size = font_size
-                                if font_bold is not None:
-                                    run.font.bold = font_bold
-                                if font_color:
-                                    run.font.color.rgb = font_color
+                            p = textbox.text_frame.paragraphs[0]
+                            run = p.add_run()
+                            run.text = ""
+                            run.font.name = font_name
+                            run.font.size = font_size
+                            if font_bold is not None:
+                                run.font.bold = font_bold
+                            if font_color:
+                                run.font.color.rgb = font_color
                 except Exception:
                     continue
         except Exception:
