@@ -27,6 +27,11 @@ class ContentReplayer:
         self.background_color: str | None = None
         self.background_theme_color: str | None = None
         self.placeholder_mapping: dict = {}  # 模板占位符语义映射
+        self.color_mapping: dict = {}  # 颜色映射表：原颜色 -> 模板颜色
+        self.template_accent_color: str | None = None  # 模板强调色
+        self.template_title_font: str | None = None  # 模板标题字体 (major)
+        self.template_body_font: str | None = None  # 模板正文字体 (minor)
+        self.force_template_font: bool = True  # 是否强制使用模板字体
 
         if template_path and Path(template_path).exists():
             extractor = TemplateFormatExtractor()
@@ -361,6 +366,28 @@ class ContentReplayer:
                 )
             except Exception:
                 pass
+
+        # 分析原PPT主色调，建立颜色映射（遵循模板配色要求）
+        try:
+            master_style = config.master_style.upper()
+            master_config = self.registry.get_master_style(master_style)
+            if master_config:
+                self.template_accent_color = master_config.get("accent_color", "").lstrip("#")
+            self.color_mapping = self._build_color_mapping(content_models, self.template_accent_color)
+        except Exception:
+            self.color_mapping = {}
+
+        # 提取模板主题字体（用于字体统一）
+        try:
+            from core.analyzer.template_format_extractor import TemplateFormatExtractor
+            font_extractor = TemplateFormatExtractor()
+            if selected_master_index is not None:
+                fonts = font_extractor.extract_theme_fonts(self.template_path, selected_master_index)
+                self.template_title_font = fonts.get("major")
+                self.template_body_font = fonts.get("minor")
+        except Exception:
+            self.template_title_font = None
+            self.template_body_font = None
 
         for slide_idx, model in enumerate(content_models):
             if selected_master:
@@ -803,25 +830,39 @@ class ContentReplayer:
                 # 模板没有副标题占位符：将副标题合并到主正文的最前面
                 body_main_blocks = subtitle_blocks + body_main_blocks
         
-        # 4. 填入主正文（使用模板正文占位符的样式）
-        # 判断是否应该用占位符填入：只有当主正文来自同一个 shape 时才用占位符
-        # 如果主正文来自多个不同 shape，说明原PPT有多个文本框，应该按原位置回填
-        # 注意：副标题合并进来时不影响多shape判断（副标题应该和正文一起填入占位符）
-        main_block_shape_ids = set()
-        for block in body_main_blocks:
-            if block.raw_shape_id is not None and block.semantic_role != "title":
-                main_block_shape_ids.add(block.raw_shape_id)
-        
-        # 如果主正文来自同一个 shape（或没有 shape_id），填入占位符
-        # 如果来自多个 shape，则全部按原位置回填，保留原PPT布局
-        if body_main_blocks and len(main_block_shape_ids) <= 1:
-            body_placeholder = self._find_placeholder_by_role(slide, "body_main")
-            if body_placeholder:
-                self._fill_body_into_placeholder(slide, body_main_blocks, body_placeholder)
-                # 标记已处理
-                for block in body_main_blocks:
-                    if block.raw_shape_id is not None:
-                        processed_shape_ids.add(block.raw_shape_id)
+        # 4. 智能匹配正文占位符（优化多文本框的占位符分配）
+        # 策略：
+        # - 如果只有1个主正文shape → 填入body_main占位符
+        # - 如果有多个主正文shape → 分析布局，智能匹配模板的多栏占位符
+        # - 匹配成功的：填入占位符（只填内容，格式遵循模板）
+        # - 匹配失败的：按原位置回填（保留原PPT布局）
+        if body_main_blocks:
+            # 按shape_id分组
+            shape_blocks: dict[int, list] = {}
+            for block in body_main_blocks:
+                sid = block.raw_shape_id
+                if sid is None:
+                    sid = -1  # 无shape_id的放一起
+                if sid not in shape_blocks:
+                    shape_blocks[sid] = []
+                shape_blocks[sid].append(block)
+            
+            main_shape_count = len([s for s in shape_blocks.keys() if s >= 0])
+            
+            if main_shape_count <= 1:
+                # 只有一个主正文shape：填入body_main占位符
+                body_placeholder = self._find_placeholder_by_role(slide, "body_main")
+                if body_placeholder:
+                    self._fill_body_into_placeholder(slide, body_main_blocks, body_placeholder)
+                    for block in body_main_blocks:
+                        if block.raw_shape_id is not None:
+                            processed_shape_ids.add(block.raw_shape_id)
+            else:
+                # 多个主正文shape：尝试智能匹配模板占位符
+                matched = self._smart_match_placeholders(slide, shape_blocks, processed_shape_ids)
+                if not matched:
+                    # 匹配失败：全部按原位置回填（在第7步处理）
+                    pass
         
         # 5. 填入侧边栏内容（如果有对应的占位符）
         if body_sidebar_blocks:
@@ -846,7 +887,15 @@ class ContentReplayer:
         
         # 7. 处理额外的自选图形和文本框（装饰性元素、未被占位符处理的内容）
         # 用 raw_shape_id 精确去重，避免内容重复处理
+        # 注意：z-order顺序从底到顶：group/smartart → autoshape → text
         if model.raw_shapes:
+            # 分离不同类型，确保正确的z-order
+            group_list = []
+            smartart_list = []
+            autoshape_list = []
+            text_shape_list = []
+            other_shape_list = []
+            
             for shape_data in model.raw_shapes:
                 shape_id = shape_data.get("shape_id")
                 
@@ -860,12 +909,40 @@ class ContentReplayer:
                 if shape_type in ("image", "table"):
                     continue
                 
-                if shape_type == "text":
-                    self._add_extra_text_shape(slide, shape_data)
+                if shape_type == "group":
+                    group_list.append(shape_data)
+                elif shape_type == "smartart":
+                    smartart_list.append(shape_data)
                 elif shape_type == "autoshape":
-                    self._add_extra_autoshape(slide, shape_data)
-                elif shape_type == "image":
+                    autoshape_list.append(shape_data)
+                elif shape_type == "text":
+                    text_shape_list.append(shape_data)
+                else:
+                    other_shape_list.append(shape_data)
+            
+            # 第1层：group和smartart（最底层）
+            for shape_data in group_list:
+                self._add_shape_from_data(slide, shape_data)
+            for shape_data in smartart_list:
+                self._add_shape_from_data(slide, shape_data)
+            
+            # 第2层：autoshape（背景形状）
+            for shape_data in autoshape_list:
+                self._add_extra_autoshape(slide, shape_data)
+            
+            # 第3层：其他形状（图片、图表等）
+            for shape_data in other_shape_list:
+                st = shape_data.get("type")
+                if st == "image":
                     self._add_image_shape(slide, shape_data)
+                elif st == "chart":
+                    self._add_chart_shape(slide, shape_data)
+                elif st == "ole":
+                    self._add_ole_shape(slide, shape_data)
+            
+            # 第4层：text（文本层，确保在最上面）
+            for shape_data in text_shape_list:
+                self._add_extra_text_shape(slide, shape_data)
 
     def _find_placeholder_by_role(self, slide, role: str) -> object | None:
         """根据语义角色查找模板占位符
@@ -1000,6 +1077,213 @@ class ContentReplayer:
                     continue
         
         return None
+    
+    def _smart_match_placeholders(self, slide, shape_blocks: dict[int, list], processed_shape_ids: set) -> bool:
+        """智能匹配多文本框到模板占位符
+        
+        支持的布局模式：
+        1. 左右双栏布局：模板2个占位符左右分布，原PPT文本框也分左右
+        2. 上下布局：模板2个占位符上下分布，原PPT文本框也分上下
+        3. 三栏布局：模板3个占位符水平分布，原PPT文本框也分三栏
+        
+        只有当占位符数量和文本shape数量匹配，且位置模式相似时才匹配
+        否则保持原位置回填（保留原PPT布局）
+        """
+        try:
+            # 获取模板的内容占位符（排除标题、页脚等）
+            content_placeholders = []
+            for ph in slide.placeholders:
+                try:
+                    phf = ph.placeholder_format
+                    # 跳过标题、页脚、日期、页码
+                    if phf.type in (1, 3, 4, 13, 14, 15, 16):
+                        continue
+                    # 只考虑有文本框的占位符（OBJECT和BODY类型都算）
+                    if ph.has_text_frame:
+                        content_placeholders.append(ph)
+                except Exception:
+                    continue
+            
+            if not content_placeholders:
+                return False
+            
+            # 获取有位置信息的文本shape
+            text_shapes_with_pos = []
+            for shape_id, blocks in shape_blocks.items():
+                if shape_id < 0:
+                    continue
+                # 从第一个block的shape_format获取位置信息
+                block = blocks[0]
+                left = None
+                top = None
+                width = None
+                height = None
+                if block.shape_format:
+                    left = block.shape_format.left
+                    top = block.shape_format.top
+                    width = block.shape_format.width
+                    height = block.shape_format.height
+                if left is not None and top is not None:
+                    text_shapes_with_pos.append((shape_id, blocks, left, top, width, height))
+            
+            if not text_shapes_with_pos:
+                return False
+            
+            # 至少需要2个占位符和2个文本shape才尝试匹配
+            if len(content_placeholders) < 2 or len(text_shapes_with_pos) < 2:
+                return False
+            
+            slide_width = self.target_width or Emu(12192000)
+            slide_height = self.target_height or Emu(6858000)
+            
+            # ========== 模式1：左右双栏布局 ==========
+            if len(content_placeholders) >= 2:
+                # 检查模板占位符是否是左右分布
+                ph_lefts = [ph.left for ph in content_placeholders]
+                ph_lefts_sorted = sorted(ph_lefts)
+                # 如果最左和最右的占位符中心距离超过宽度的30%，认为是左右布局
+                if len(ph_lefts_sorted) >= 2:
+                    left_ph_center = ph_lefts_sorted[0] + content_placeholders[0].width / 2
+                    right_ph_center = ph_lefts_sorted[-1] + content_placeholders[-1].width / 2
+                    if right_ph_center - left_ph_center > slide_width * 0.3:
+                        # 检查原PPT是否也是左右分栏
+                        left_shapes = [s for s in text_shapes_with_pos if s[2] < slide_width * 0.5]
+                        right_shapes = [s for s in text_shapes_with_pos if s[2] >= slide_width * 0.5]
+                        
+                        if left_shapes and right_shapes:
+                            # 按left排序占位符
+                            sorted_phs = sorted(content_placeholders, key=lambda x: x.left)
+                            left_ph = sorted_phs[0]
+                            right_ph = sorted_phs[-1]
+                            
+                            # 左栏内容（按top排序）
+                            left_shapes.sort(key=lambda x: x[3])
+                            left_blocks = []
+                            for _, blocks, _, _, _, _ in left_shapes:
+                                left_blocks.extend(blocks)
+                            
+                            # 右栏内容（按top排序）
+                            right_shapes.sort(key=lambda x: x[3])
+                            right_blocks = []
+                            for _, blocks, _, _, _, _ in right_shapes:
+                                right_blocks.extend(blocks)
+                            
+                            # 填入左栏
+                            if left_blocks:
+                                self._fill_body_into_placeholder(slide, left_blocks, left_ph)
+                                for block in left_blocks:
+                                    if block.raw_shape_id is not None:
+                                        processed_shape_ids.add(block.raw_shape_id)
+                            
+                            # 填入右栏
+                            if right_blocks:
+                                self._fill_body_into_placeholder(slide, right_blocks, right_ph)
+                                for block in right_blocks:
+                                    if block.raw_shape_id is not None:
+                                        processed_shape_ids.add(block.raw_shape_id)
+                            
+                            return True
+            
+            # ========== 模式2：上下布局 ==========
+            if len(content_placeholders) >= 2:
+                # 检查模板占位符是否是上下分布
+                ph_tops = [ph.top for ph in content_placeholders]
+                ph_tops_sorted = sorted(ph_tops)
+                # 如果最上和最下的占位符中心距离超过高度的30%，认为是上下布局
+                if len(ph_tops_sorted) >= 2:
+                    top_ph_center = ph_tops_sorted[0] + content_placeholders[0].height / 2
+                    bottom_ph_center = ph_tops_sorted[-1] + content_placeholders[-1].height / 2
+                    if bottom_ph_center - top_ph_center > slide_height * 0.3:
+                        # 检查原PPT是否也是上下分布
+                        top_shapes = [s for s in text_shapes_with_pos if s[3] < slide_height * 0.5]
+                        bottom_shapes = [s for s in text_shapes_with_pos if s[3] >= slide_height * 0.5]
+                        
+                        if top_shapes and bottom_shapes:
+                            # 按top排序占位符
+                            sorted_phs = sorted(content_placeholders, key=lambda x: x.top)
+                            top_ph = sorted_phs[0]
+                            bottom_ph = sorted_phs[-1]
+                            
+                            # 上栏内容（按left排序）
+                            top_shapes.sort(key=lambda x: x[2])
+                            top_blocks = []
+                            for _, blocks, _, _, _, _ in top_shapes:
+                                top_blocks.extend(blocks)
+                            
+                            # 下栏内容（按left排序）
+                            bottom_shapes.sort(key=lambda x: x[2])
+                            bottom_blocks = []
+                            for _, blocks, _, _, _, _ in bottom_shapes:
+                                bottom_blocks.extend(blocks)
+                            
+                            # 填入上栏
+                            if top_blocks:
+                                self._fill_body_into_placeholder(slide, top_blocks, top_ph)
+                                for block in top_blocks:
+                                    if block.raw_shape_id is not None:
+                                        processed_shape_ids.add(block.raw_shape_id)
+                            
+                            # 填入下栏
+                            if bottom_blocks:
+                                self._fill_body_into_placeholder(slide, bottom_blocks, bottom_ph)
+                                for block in bottom_blocks:
+                                    if block.raw_shape_id is not None:
+                                        processed_shape_ids.add(block.raw_shape_id)
+                            
+                            return True
+            
+            # ========== 模式3：三栏布局 ==========
+            if len(content_placeholders) >= 3 and len(text_shapes_with_pos) >= 3:
+                # 简单的三栏检测：3个占位符水平分布
+                sorted_phs = sorted(content_placeholders, key=lambda x: x.left)
+                # 检查是否大致三等分
+                ph1_center = sorted_phs[0].left + sorted_phs[0].width / 2
+                ph2_center = sorted_phs[1].left + sorted_phs[1].width / 2
+                ph3_center = sorted_phs[2].left + sorted_phs[2].width / 2
+                
+                d1 = ph2_center - ph1_center
+                d2 = ph3_center - ph2_center
+                # 如果间距大致相等（差异<20%），认为是三栏布局
+                if d1 > 0 and d2 > 0 and abs(d1 - d2) / max(d1, d2) < 0.3:
+                    # 检查原PPT的文本框是否也分三栏
+                    col1 = slide_width * 0.33
+                    col2 = slide_width * 0.66
+                    
+                    col1_shapes = [s for s in text_shapes_with_pos if s[2] < col1]
+                    col2_shapes = [s for s in text_shapes_with_pos if col1 <= s[2] < col2]
+                    col3_shapes = [s for s in text_shapes_with_pos if s[2] >= col2]
+                    
+                    if col1_shapes and col2_shapes and col3_shapes:
+                        # 收集每栏的内容
+                        col1_blocks = []
+                        col1_shapes.sort(key=lambda x: x[3])
+                        for _, blocks, _, _, _, _ in col1_shapes:
+                            col1_blocks.extend(blocks)
+                        
+                        col2_blocks = []
+                        col2_shapes.sort(key=lambda x: x[3])
+                        for _, blocks, _, _, _, _ in col2_shapes:
+                            col2_blocks.extend(blocks)
+                        
+                        col3_blocks = []
+                        col3_shapes.sort(key=lambda x: x[3])
+                        for _, blocks, _, _, _, _ in col3_shapes:
+                            col3_blocks.extend(blocks)
+                        
+                        # 填入三栏
+                        for i, blocks in enumerate([col1_blocks, col2_blocks, col3_blocks]):
+                            if blocks and i < len(sorted_phs):
+                                self._fill_body_into_placeholder(slide, blocks, sorted_phs[i])
+                                for block in blocks:
+                                    if block.raw_shape_id is not None:
+                                        processed_shape_ids.add(block.raw_shape_id)
+                        
+                        return True
+            
+            # 其他情况：不匹配，返回False
+            return False
+        except Exception:
+            return False
 
     def _fill_simple_content(self, slide, model: SlideContentModel) -> None:
         if model.title:
@@ -1044,6 +1328,10 @@ class ContentReplayer:
             elif shape_type == "autoshape":
                 self._add_auto_shape(slide, shape_data)
             elif shape_type == "group":
+                for sub_shape in shape_data.get("shapes", []):
+                    self._add_shape_from_data(slide, sub_shape)
+            elif shape_type == "smartart":
+                # SmartArt：作为group重建，内部形状应用颜色映射
                 for sub_shape in shape_data.get("shapes", []):
                     self._add_shape_from_data(slide, sub_shape)
         except Exception:
@@ -1214,6 +1502,9 @@ class ContentReplayer:
         if font_name:
             font.name = font_name
         
+        # 强制使用模板主题字体（字体统一）
+        self._apply_font(font, is_title)
+        
         # 字号：模板要求优先，原格式兜底
         if template_fmt and template_fmt.get("font_size"):
             font.size = template_fmt["font_size"]
@@ -1284,6 +1575,9 @@ class ContentReplayer:
             elif original_format and original_format.font_name:
                 font.name = original_format.font_name
             
+            # 强制使用模板主题字体（字体统一）
+            self._apply_font(font, is_title=is_title)
+            
             # 字号：模板优先，原格式兜底
             if template_fmt.get("font_size"):
                 font.size = template_fmt["font_size"]
@@ -1314,6 +1608,180 @@ class ContentReplayer:
                 except Exception:
                     pass
 
+    def _build_color_mapping(self, content_models: list, accent_color: str | None) -> dict:
+        """分析原PPT主色调，建立颜色映射表
+        
+        映射规则：
+        1. 找出原PPT中出现频率最高的非中性色（主色）
+        2. 找出原PPT的浅色版本（主色的浅色填充）
+        3. 将原主色映射为模板强调色，原浅色映射为模板强调色的浅色版本
+        4. 其他强调色也映射到模板强调色系
+        """
+        if not accent_color:
+            return {}
+        
+        try:
+            from collections import Counter
+            
+            # 收集所有填充色和描边色
+            all_colors = []
+            for model in content_models:
+                for shape in model.raw_shapes:
+                    if shape.get("fill_color"):
+                        all_colors.append(shape["fill_color"].upper())
+                    if shape.get("line_color"):
+                        all_colors.append(shape["line_color"].upper())
+            
+            if not all_colors:
+                return {}
+            
+            # 统计颜色频率
+            color_counts = Counter(all_colors)
+            
+            # 过滤掉中性色（黑白灰），找出主色
+            neutral_colors = {"FFFFFF", "000000", "CCCCCC", "999999", "666666", "333333", "F5F5F5", "E0E0E0"}
+            non_neutral = [(c, cnt) for c, cnt in color_counts.items() if c not in neutral_colors and len(c) == 6]
+            
+            if not non_neutral:
+                return {}
+            
+            # 按频率排序，取前几个主色
+            non_neutral.sort(key=lambda x: x[1], reverse=True)
+            
+            color_mapping = {}
+            processed_colors = set()
+            
+            # 第一个主色 → 模板强调色
+            primary_color = non_neutral[0][0]
+            color_mapping[primary_color] = accent_color.upper()
+            processed_colors.add(primary_color)
+            
+            # 找主色的浅色版本（同一色系，亮度更高）
+            primary_rgb = self._hex_to_rgb(primary_color)
+            if primary_rgb:
+                for color, cnt in non_neutral[1:]:
+                    if color in processed_colors:
+                        continue
+                    color_rgb = self._hex_to_rgb(color)
+                    if not color_rgb:
+                        continue
+                    # 判断是否是同一色系（色相接近）
+                    if self._is_same_color_family(primary_rgb, color_rgb):
+                        # 浅色 → 强调色的浅色版本
+                        light_accent = self._lighten_color(accent_color, 0.7)
+                        color_mapping[color] = light_accent
+                        processed_colors.add(color)
+            
+            # 其他强调色 → 也映射到模板强调色系（不同深浅）
+            for color, cnt in non_neutral:
+                if color in processed_colors:
+                    continue
+                color_rgb = self._hex_to_rgb(color)
+                if not color_rgb:
+                    continue
+                # 根据颜色亮度决定映射到哪个深浅
+                luminance = self._get_luminance(color_rgb)
+                if luminance > 0.6:
+                    # 浅色 → 强调色的更浅版本
+                    color_mapping[color] = self._lighten_color(accent_color, 0.8)
+                elif luminance < 0.3:
+                    # 深色 → 强调色的深色版本
+                    color_mapping[color] = self._darken_color(accent_color, 0.7)
+                else:
+                    color_mapping[color] = accent_color.upper()
+                processed_colors.add(color)
+            
+            return color_mapping
+        except Exception:
+            return {}
+    
+    def _map_color(self, color: str | None) -> str | None:
+        """应用颜色映射，将原颜色转换为模板配色"""
+        if not color:
+            return None
+        color_upper = color.upper()
+        if color_upper in self.color_mapping:
+            return self.color_mapping[color_upper]
+        return color
+    
+    def _hex_to_rgb(self, hex_color: str) -> tuple | None:
+        """将十六进制颜色转换为RGB元组"""
+        try:
+            hex_color = hex_color.strip("#").upper()
+            if len(hex_color) != 6:
+                return None
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            return (r, g, b)
+        except Exception:
+            return None
+    
+    def _rgb_to_hex(self, r: int, g: int, b: int) -> str:
+        """将RGB转换为十六进制颜色"""
+        return f"{min(255, max(0, r)):02X}{min(255, max(0, g)):02X}{min(255, max(0, b)):02X}"
+    
+    def _get_luminance(self, rgb: tuple) -> float:
+        """计算颜色的相对亮度"""
+        r, g, b = rgb
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+    
+    def _is_same_color_family(self, rgb1: tuple, rgb2: tuple, threshold: float = 0.2) -> bool:
+        """判断两个颜色是否属于同一色系（基于归一化后的RGB比例）"""
+        r1, g1, b1 = rgb1
+        r2, g2, b2 = rgb2
+        sum1 = max(r1 + g1 + b1, 1)
+        sum2 = max(r2 + g2 + b2, 1)
+        # 归一化
+        nr1, ng1, nb1 = r1/sum1, g1/sum1, b1/sum1
+        nr2, ng2, nb2 = r2/sum2, g2/sum2, b2/sum2
+        # 计算差异
+        diff = abs(nr1 - nr2) + abs(ng1 - ng2) + abs(nb1 - nb2)
+        return diff < threshold
+    
+    def _lighten_color(self, hex_color: str, factor: float) -> str:
+        """提亮颜色（factor: 0-1，越大越亮）"""
+        rgb = self._hex_to_rgb(hex_color)
+        if not rgb:
+            return hex_color
+        r, g, b = rgb
+        r = int(r + (255 - r) * factor)
+        g = int(g + (255 - g) * factor)
+        b = int(b + (255 - b) * factor)
+        return self._rgb_to_hex(r, g, b)
+    
+    def _darken_color(self, hex_color: str, factor: float) -> str:
+        """加深颜色（factor: 0-1，越大越深）"""
+        rgb = self._hex_to_rgb(hex_color)
+        if not rgb:
+            return hex_color
+        r, g, b = rgb
+        r = int(r * factor)
+        g = int(g * factor)
+        b = int(b * factor)
+        return self._rgb_to_hex(r, g, b)
+    
+    def _apply_font(self, font, is_title: bool = False) -> None:
+        """应用模板字体统一
+        
+        如果启用了强制模板字体，则将字体替换为模板的主题字体
+        标题用major font，正文用minor font
+        """
+        if not self.force_template_font:
+            return
+        
+        target_font = None
+        if is_title and self.template_title_font:
+            target_font = self.template_title_font
+        elif not is_title and self.template_body_font:
+            target_font = self.template_body_font
+        
+        if target_font:
+            try:
+                font.name = target_font
+            except Exception:
+                pass
+    
     def _is_light_color(self, hex_color: str) -> bool:
         """判断颜色是否为浅色（亮度 > 0.5 视为浅色）"""
         if not hex_color or len(hex_color) != 6:
@@ -1475,11 +1943,12 @@ class ContentReplayer:
             cell = table.cell(r, c)
             cell.text = cell_data.get("text", "")
 
-            # 背景色
+            # 背景色（应用颜色映射，遵循模板配色）
             if cell_data.get("fill_color"):
                 try:
+                    fill_color = self._map_color(cell_data["fill_color"])
                     cell.fill.solid()
-                    cell.fill.fore_color.rgb = RGBColor.from_string(cell_data["fill_color"])
+                    cell.fill.fore_color.rgb = RGBColor.from_string(fill_color)
                 except Exception:
                     pass
 
@@ -1526,6 +1995,8 @@ class ContentReplayer:
                     font = run.font
                     if cell_data.get("font_name"):
                         font.name = cell_data["font_name"]
+                    # 强制使用模板主题字体（字体统一，表格用正文字体）
+                    self._apply_font(font, is_title=False)
                     if cell_data.get("font_size"):
                         font.size = cell_data["font_size"]
                     if cell_data.get("bold") is not None:
@@ -1534,7 +2005,9 @@ class ContentReplayer:
                         font.italic = cell_data["italic"]
                     if cell_data.get("color"):
                         try:
-                            font.color.rgb = RGBColor.from_string(cell_data["color"])
+                            # 应用颜色映射（遵循模板配色）
+                            text_color = self._map_color(cell_data["color"])
+                            font.color.rgb = RGBColor.from_string(text_color)
                         except Exception:
                             pass
             except Exception:
@@ -1683,14 +2156,15 @@ class ContentReplayer:
             else:
                 chart.has_legend = False
 
-            # 设置系列颜色
+            # 设置系列颜色（应用颜色映射，遵循模板配色）
             for i, series in enumerate(chart.series):
                 if i < len(chart_data_list):
                     color = chart_data_list[i].get("color")
                     if color:
                         try:
+                            mapped_color = self._map_color(color)
                             series.format.fill.solid()
-                            series.format.fill.fore_color.rgb = RGBColor.from_string(color)
+                            series.format.fill.fore_color.rgb = RGBColor.from_string(mapped_color)
                         except Exception:
                             pass
 
@@ -2100,28 +2574,50 @@ class ContentReplayer:
             fill_color = shape_data.get("fill_color")
             is_decoration = self._is_decoration_shape(shape_data)
             
-            # 确定背景色：保留原格式优先
+            # 应用颜色映射（遵循模板配色要求）
+            if fill_color:
+                fill_color = self._map_color(fill_color)
+            line_color = shape_data.get("line_color")
+            if line_color:
+                line_color = self._map_color(line_color)
+            
+            # 确定背景色：保留原格式优先，已应用颜色映射
             actual_bg_color = None
             if is_decoration:
                 # 装饰形状：用模板强调色
-                if self.default_text_color == "FFFFFF":
+                if self.template_accent_color:
+                    accent = self.template_accent_color
+                    if self.default_text_color == "FFFFFF":
+                        # 深色背景下用浅色装饰
+                        accent = self._lighten_color(accent, 0.5)
+                    shape.fill.solid()
+                    shape.fill.fore_color.rgb = RGBColor.from_string(accent)
+                    actual_bg_color = accent
+                    try:
+                        shape.line.color.rgb = RGBColor.from_string(accent)
+                    except Exception:
+                        pass
+                elif self.default_text_color == "FFFFFF":
                     shape.fill.solid()
                     shape.fill.fore_color.rgb = RGBColor.from_string("FFFFFF")
                     actual_bg_color = "FFFFFF"
+                    try:
+                        shape.line.color.rgb = RGBColor.from_string("FFFFFF")
+                    except Exception:
+                        pass
                 else:
                     shape.fill.solid()
                     shape.fill.fore_color.rgb = RGBColor.from_string("3DCD58")
                     actual_bg_color = "3DCD58"
-                try:
-                    shape.line.color.rgb = RGBColor.from_string(actual_bg_color)
-                except Exception:
-                    pass
+                    try:
+                        shape.line.color.rgb = RGBColor.from_string("3DCD58")
+                    except Exception:
+                        pass
             elif fill_color:
-                # 内容框：保留原背景色
+                # 内容框：使用已应用颜色映射后的背景色
                 shape.fill.solid()
                 shape.fill.fore_color.rgb = RGBColor.from_string(fill_color)
                 actual_bg_color = fill_color
-                line_color = shape_data.get("line_color")
                 if line_color:
                     try:
                         shape.line.color.rgb = RGBColor.from_string(line_color)

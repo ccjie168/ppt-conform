@@ -17,15 +17,16 @@ class PptxExtractor:
             raise FileNotFoundError(f"File not found: {pptx_path}")
 
         prs = Presentation(pptx_path)
+        total_slides = len(prs.slides)
         models = []
 
         for idx, slide in enumerate(prs.slides):
-            model = self._extract_slide(slide, idx)
+            model = self._extract_slide(slide, idx, total_slides)
             models.append(model)
 
         return models
 
-    def _extract_slide(self, slide, slide_index: int) -> SlideContentModel:
+    def _extract_slide(self, slide, slide_index: int, total_slides: int = 0) -> SlideContentModel:
         title = None
         title_source = {}
         title_format = None
@@ -69,42 +70,30 @@ class PptxExtractor:
             
             判断逻辑：
             1. 占位符类型为 title/body/subtitle 的不算页眉页脚
-            2. 位置在顶部8%或底部12%区域的形状
-            3. 但如果形状文本不包含页脚特征词（©、Page、页码），
-               且文本较长（>20字符），则不认为是页脚（可能是正文）
+            2. 完全在顶部8%区域 → 页眉
+            3. 完全在底部12%区域 → 页脚（无论文本内容如何，只要不是正文占位符）
+            4. 注意：用户要求舍弃原PPT的所有页眉页脚，只用模板的
             """
             try:
                 top = shape.top or 0
                 height = shape.height or 0
                 bottom = top + height
-                # 标题占位符不算页眉页脚
+                # 标题/正文/副标题占位符不算页眉页脚
                 if shape.is_placeholder:
                     ph_type = shape.placeholder_format.type
                     # 1=title, 2=body, 3=ctrTitle, 4=subTitle, 7=text
                     if ph_type in (1, 2, 3, 4, 7):
                         return False
+                    # 页脚类型的占位符：13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE
+                    if ph_type in (13, 14, 15, 16):
+                        return True
                 # 完全在顶部8%区域 → 页眉
                 if bottom < header_threshold:
                     return True
                 # 完全在底部12%区域 → 页脚
+                # 注意：无论文本内容如何，只要在底部12%且不是正文占位符，都视为页脚
+                # 因为用户要求完全舍弃原PPT的页眉页脚，只用模板的
                 if top > footer_threshold:
-                    # 检查是否是真正的页脚内容
-                    # 页脚通常包含：©、Page、纯数字页码、公司名称
-                    # 如果是较长的正文内容，不当作页脚
-                    text = ""
-                    if shape.has_text_frame:
-                        text = shape.text_frame.text.strip()
-                    if text:
-                        # 短文本（<=20字符）：很可能是页脚（页码、版权等）
-                        if len(text) <= 20:
-                            return True
-                        # 长文本：检查是否包含页脚特征词
-                        footer_keywords = ["©", "Copyright", "Page ", "| Page", "All Rights Reserved", "KunPeng Testing Agent"]
-                        is_footer_like = any(kw in text for kw in footer_keywords)
-                        if is_footer_like:
-                            return True
-                        # 不包含页脚特征词的长文本：保留为正文
-                        return False
                     return True
                 return False
             except Exception:
@@ -299,12 +288,26 @@ class PptxExtractor:
         _raw_shapes = _locals.get("raw_shapes", [])
         _layout_features = _locals.get("layout_features", {})
 
+        # 如果没有标准标题占位符，从body_blocks中提取semantic_role="title"的第一个块作为标题
+        if not _title and _body_blocks:
+            title_blocks = [b for b in _body_blocks if b.semantic_role == "title" and b.text and b.type == "paragraph"]
+            if title_blocks:
+                first_title_block = title_blocks[0]
+                _title = first_title_block.text
+                _title_format = first_title_block.text_format
+                _title_source = {
+                    "from_body_block": True,
+                    "semantic_role": "title",
+                }
+                _layout_features["has_title"] = True
+                _body_blocks = [b for b in _body_blocks if b is not first_title_block]
+
         return SlideContentModel(
             slide_index=slide_index,
             title=_title,
             body_blocks=_body_blocks,
             notes=_notes_text,
-            original_layout_type=self._detect_layout_type(slide, slide_index),
+            original_layout_type=self._detect_layout_type(slide, slide_index, total_slides),
             raw_shapes=_raw_shapes,
             layout_features=_layout_features,
             title_source=_title_source,
@@ -329,13 +332,30 @@ class PptxExtractor:
                     return self._extract_auto_shape(shape)
 
             if shape.has_text_frame:
-                return self._extract_text_shape(shape, slide_index)
+                text_result = self._extract_text_shape(shape, slide_index)
+                if text_result:
+                    return text_result
+                # 如果文本形状没有内容，回退到提取为autoshape（保留几何形状）
+                if shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
+                    return self._extract_auto_shape(shape)
             elif shape_type == MSO_SHAPE_TYPE.PICTURE:
                 return self._extract_image_shape(shape)
             elif shape.has_table:
                 return self._extract_table_shape(shape)
             elif shape_type == MSO_SHAPE_TYPE.GROUP:
-                return self._extract_group_shape(shape, slide_index)
+                # 检查是否是SmartArt（diagram）
+                is_smartart = False
+                try:
+                    xml = shape._element.xml
+                    if 'dgm:' in xml or 'diagram' in xml.lower() or 'smartArt' in xml.lower():
+                        is_smartart = True
+                except Exception:
+                    pass
+                
+                if is_smartart:
+                    return self._extract_smartart_shape(shape, slide_index)
+                else:
+                    return self._extract_group_shape(shape, slide_index)
             elif shape_type == MSO_SHAPE_TYPE.CHART:
                 return self._extract_chart_shape(shape)
             elif shape_type == MSO_SHAPE_TYPE.OLE_OBJECT:
@@ -347,15 +367,16 @@ class PptxExtractor:
             return None
 
     def _filter_overlapping_shapes(self, raw_shapes: list[dict]) -> list[dict]:
-        """过滤掉与text形状完全重叠且无文本的autoshape
+        """过滤掉与text形状完全重叠且无填充、无文本的autoshape
         
-        问题：原PPT中可能有一个有填充色的矩形作为文本框的背景，两者完全重叠
-        转换后这个矩形会遮挡文本内容
+        问题：原PPT中可能有一个无填充的矩形作为文本框的背景，两者完全重叠
+        转换后这个矩形可能是多余的
         
         判断规则：
         1. 找到所有text类型的形状
-        2. 找到所有autoshape类型的形状，且没有文本内容
+        2. 找到所有autoshape类型的形状，且无文本、无填充色、无描边
         3. 如果一个autoshape与一个text形状位置和大小完全相同，则移除该autoshape
+        4. 注意：有填充色的autoshape是设计元素（如内容卡片背景），必须保留
         """
         if not raw_shapes:
             return raw_shapes
@@ -373,7 +394,7 @@ class PptxExtractor:
         if not text_shapes:
             return raw_shapes
         
-        # 过滤掉与text形状重叠的autoshape
+        # 过滤掉与text形状重叠的无填充、无文本、无描边的autoshape
         filtered = []
         tolerance = 1000  # 容差，单位EMU
         
@@ -387,26 +408,38 @@ class PptxExtractor:
                     if para.get("text", "").strip():
                         has_text = True
                         break
+                if shape.get("text", "").strip():
+                    has_text = True
                 
-                if not has_text:
-                    # 无文本的autoshape：检查是否与text形状重叠
-                    left = shape.get("left", 0)
-                    top = shape.get("top", 0)
-                    width = shape.get("width", 0)
-                    height = shape.get("height", 0)
-                    
-                    is_overlapping = False
-                    for t_left, t_top, t_width, t_height in text_shapes:
-                        if (abs(left - t_left) < tolerance and
-                            abs(top - t_top) < tolerance and
-                            abs(width - t_width) < tolerance and
-                            abs(height - t_height) < tolerance):
-                            is_overlapping = True
-                            break
-                    
-                    if is_overlapping:
-                        # 与text形状完全重叠，跳过这个autoshape
-                        continue
+                # 检查是否有填充色
+                has_fill = bool(shape.get("fill_color"))
+                
+                # 检查是否有描边
+                has_line = bool(shape.get("line_color") and shape.get("line_width") and shape.get("line_width") > 0)
+                
+                # 有填充、有文本或有描边的autoshape：保留（是设计元素）
+                if has_fill or has_text or has_line:
+                    filtered.append(shape)
+                    continue
+                
+                # 无填充、无文本、无描边的autoshape：检查是否与text形状重叠
+                left = shape.get("left", 0)
+                top = shape.get("top", 0)
+                width = shape.get("width", 0)
+                height = shape.get("height", 0)
+                
+                is_overlapping = False
+                for t_left, t_top, t_width, t_height in text_shapes:
+                    if (abs(left - t_left) < tolerance and
+                        abs(top - t_top) < tolerance and
+                        abs(width - t_width) < tolerance and
+                        abs(height - t_height) < tolerance):
+                        is_overlapping = True
+                        break
+                
+                if is_overlapping:
+                    # 与text形状完全重叠的空autoshape，跳过
+                    continue
             
             filtered.append(shape)
         
@@ -651,6 +684,55 @@ class PptxExtractor:
             "width": group.width,
             "height": group.height,
             "shapes": shapes_data,
+        }
+
+    def _extract_smartart_shape(self, shape, slide_index: int) -> dict:
+        """提取SmartArt图形
+        
+        SmartArt在python-pptx中以group形式存在，内部包含多个自选图形和文本框
+        我们提取其内部的所有形状和文本，作为smartart类型存储
+        
+        回填时，以group形式重建，并应用颜色映射
+        """
+        shapes_data = []
+        # 提取内部文本内容（用于内容识别）
+        all_text_parts = []
+        
+        # 递归提取group中的所有形状
+        def extract_shapes_recursive(shapes):
+            for inner_shape in shapes:
+                shape_data = self._extract_shape(inner_shape, slide_index)
+                if shape_data:
+                    shapes_data.append(shape_data)
+                    # 收集文本
+                    if shape_data.get("type") == "text":
+                        for para in shape_data.get("paragraphs", []):
+                            if para.get("text"):
+                                all_text_parts.append(para["text"])
+                    elif shape_data.get("type") == "autoshape" and shape_data.get("text"):
+                        all_text_parts.append(shape_data["text"])
+                # 递归处理子group
+                try:
+                    if hasattr(inner_shape, 'shapes') and inner_shape.shapes:
+                        from pptx.enum.shapes import MSO_SHAPE_TYPE
+                        if inner_shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                            extract_shapes_recursive(inner_shape.shapes)
+                except Exception:
+                    pass
+        
+        try:
+            extract_shapes_recursive(shape.shapes)
+        except Exception:
+            pass
+        
+        return {
+            "type": "smartart",
+            "left": shape.left,
+            "top": shape.top,
+            "width": shape.width,
+            "height": shape.height,
+            "shapes": shapes_data,
+            "all_text": " ".join(all_text_parts),
         }
 
     def _extract_chart_shape(self, shape) -> dict:
@@ -1064,14 +1146,14 @@ class PptxExtractor:
         except Exception:
             return ""
 
-    def _detect_layout_type(self, slide, slide_index: int) -> str:
+    def _detect_layout_type(self, slide, slide_index: int, total_slides: int = 0) -> str:
         """检测原PPT的布局类型
         
         注意：不能仅凭layout名称判断，因为很多内容页布局名称也包含"Title"
         需要结合：
         1. layout名称中的关键词（精确匹配封面/章节/结尾）
         2. 占位符类型和数量
-        3. 内容特征
+        3. 内容特征（文字多少、是否有感谢语/议程关键词等）
         """
         try:
             layout_name = (slide.slide_layout.name or "").lower()
@@ -1087,30 +1169,129 @@ class PptxExtractor:
                     return "cover"
             
             # 章节页
-            if "章节" in layout_name or "section break" in layout_name:
+            if "章节" in layout_name or "section break" in layout_name or "section header" in layout_name:
                 return "section"
             
             # 结尾页
-            if "结尾" in layout_name or "closing" in layout_name or "thank you" in layout_name:
+            if "结尾" in layout_name or "closing" in layout_name or "thank you" in layout_name or "end slide" in layout_name:
                 return "closing"
             
             # 议程页
-            if "议程" in layout_name or "agenda" in layout_name:
+            if "议程" in layout_name or "agenda" in layout_name or "table of contents" in layout_name or "目录" in layout_name:
                 return "agenda"
         except Exception:
             pass
         
         # 根据内容特征判断
-        if slide_index == 0:
-            # 第一页：检查是否只有标题和副标题（典型封面特征）
-            try:
-                title_shape = slide.shapes.title
-                placeholders = list(slide.placeholders)
-                # 如果只有2个占位符（标题+副标题），则是封面
-                if len(placeholders) <= 2 and title_shape:
-                    return "cover"
-            except Exception:
-                pass
+        try:
+            # 收集所有文本内容（排除页眉页脚区域的）
+            all_text = ""
+            text_shape_count = 0
+            total_shapes = len(slide.shapes)
+            
+            slide_height = slide.part.package.presentation_part.presentation.slide_height
+            header_th = slide_height * 0.08
+            footer_th = slide_height * 0.88
+            
+            for shape in slide.shapes:
+                top = shape.top or 0
+                height = shape.height or 0
+                bottom = top + height
+                # 跳过页眉页脚区域的形状
+                if bottom < header_th or top > footer_th:
+                    continue
+                if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                    text = shape.text_frame.text.strip()
+                    if text:
+                        all_text += text + "\n"
+                        text_shape_count += 1
+            
+            all_text_lower = all_text.lower()
+            text_lines = [l.strip() for l in all_text.split('\n') if l.strip()]
+            text_line_count = len(text_lines)
+            
+            # 计算总字符数（用于判断内容密度）
+            total_chars = len(all_text.replace('\n', '').replace(' ', ''))
+            
+            # ========== 封面识别 ==========
+            if slide_index == 0:
+                # 封面特征：有大标题、有副标题、内容少
+                if text_line_count <= 10 and text_shape_count <= 8:
+                    cover_indicators = [
+                        "presenter", "演讲者", "by:", "date:", "日期", 
+                        "v0.", "version", "团队", "team", "speaker",
+                        "presented by", "作者", "制作"
+                    ]
+                    has_cover_indicator = any(kw in all_text_lower for kw in cover_indicators)
+                    if has_cover_indicator or text_line_count <= 6:
+                        return "cover"
+            
+            # ========== 结尾页识别 ==========
+            is_last_page = (total_slides > 0 and slide_index == total_slides - 1)
+            closing_keywords = [
+                "thank you", "thanks", "谢谢", "感谢",
+                "q&a", "q & a", "qa", "question", "问题",
+                "the end", "结束", "结语", "总结",
+                "contact", "联系我们", "联系方式",
+                "next step", "下一步", "decision", "决策"
+            ]
+            has_closing_kw = any(kw in all_text_lower for kw in closing_keywords)
+            
+            if has_closing_kw and text_line_count <= 10:
+                return "closing"
+            
+            # 最后一页且内容少 → 可能是结尾页
+            if is_last_page and text_line_count <= 5:
+                return "closing"
+            
+            # ========== 议程页识别 ==========
+            agenda_title_keywords = ["agenda", "议程", "目录", "outline", "overview", "table of content"]
+            title_text = " ".join(text_lines[:2]).lower()
+            has_agenda_title = any(kw in title_text for kw in agenda_title_keywords)
+            
+            # 检查是否有编号列表（支持多种格式）
+            has_numbered_list = False
+            numbered_count = 0
+            for line in text_lines:
+                line_stripped = line.strip()
+                if not line_stripped:
+                    continue
+                # 格式1: 数字+标点 (1. 2. 3. / 1、2、)
+                if len(line_stripped) >= 2 and line_stripped[0].isdigit() and line_stripped[1] in '.、)':
+                    numbered_count += 1
+                # 格式2: 两位数字开头 (01 02 03)
+                elif len(line_stripped) >= 2 and line_stripped[:2].isdigit():
+                    numbered_count += 1
+                # 格式3: 中文数字
+                elif line_stripped.startswith(('一、', '二、', '三、', '四、', '五、', '六、', '七、', '八、', '九、', '十、')):
+                    numbered_count += 1
+            if numbered_count >= 3:
+                has_numbered_list = True
+            
+            if has_agenda_title and has_numbered_list:
+                return "agenda"
+            
+            # ========== 章节页识别 ==========
+            # 章节页特征：
+            # 1. 内容很少（只有标题+可能的副标题）
+            # 2. 文字少（字符数少）
+            # 3. 形状少
+            # 4. 标题通常比较大（但这里不好判断字体大小，用内容量替代）
+            is_content_light = (
+                text_line_count <= 4 
+                and text_shape_count <= 4 
+                and total_shapes <= 12
+                and total_chars < 100
+            )
+            
+            if is_content_light and text_line_count <= 3:
+                # 可能是章节/分隔页
+                # 排除封面和结尾（已经判断过了）
+                if slide_index > 0 and not (is_last_page and has_closing_kw):
+                    return "section"
+        
+        except Exception:
+            pass
         
         # 默认是内容页
         return "content"
