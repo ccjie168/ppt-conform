@@ -300,13 +300,11 @@ with st.sidebar:
     
     # 底部用户区
     st.markdown("""
-    <div style="position: absolute; bottom: 0; left: 0; right: 0; padding: 16px; border-top: 1px solid #E2E8F0; background: #fff;">
-        <div style="display: flex; align-items: center; gap: 10px;">
-            <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #3DCD58 0%, #2EAE4A 100%); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 13px; flex-shrink: 0;">JC</div>
-            <div style="flex: 1; min-width: 0;">
-                <div style="font-size: 13px; font-weight: 600; color: #1A1A1A; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">JC</div>
-                <div style="font-size: 11px; color: #718096;">设计部</div>
-            </div>
+    <div class="sidebar-user">
+        <div class="sidebar-user-avatar" style="background: linear-gradient(135deg, #3DCD58 0%, #2EAE4A 100%);">JC</div>
+        <div class="sidebar-user-info">
+            <div class="sidebar-user-name">JC</div>
+            <div class="sidebar-user-role">设计部</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -323,21 +321,49 @@ if current_page == "convert":
     st.markdown('<p class="page-subtitle">上传 PPT 文件，智能转换为标准企业模板格式</p>', unsafe_allow_html=True)
     
     # ---------- 上传区域 ----------
+    st.markdown('<div class="first-uploader" id="first-uploader-wrapper">', unsafe_allow_html=True)
     uploaded_file = st.file_uploader(
         " ",
         type=["pptx"],
         key="input_ppt",
         label_visibility="collapsed",
     )
+    st.markdown('</div>', unsafe_allow_html=True)
     
     # 自定义上传卡片
     if uploaded_file is None:
         st.markdown("""
-        <div class="upload-card">
+        <div class="upload-card" id="custom-upload-card">
             <div class="upload-card-icon">📁</div>
             <div class="upload-card-title">点击或拖拽上传 PPT 文件</div>
             <div class="upload-card-desc">支持 .pptx 格式</div>
         </div>
+        <script>
+        (function() {
+            var card = document.getElementById('custom-upload-card');
+            if (card) {
+                card.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    var wrapper = document.getElementById('first-uploader-wrapper');
+                    if (wrapper) {
+                        var inputs = wrapper.querySelectorAll('input[type="file"]');
+                        if (inputs.length > 0) {
+                            inputs[0].click();
+                        } else {
+                            var allInputs = document.querySelectorAll('input[type="file"]');
+                            for (var i = 0; i < allInputs.length; i++) {
+                                var parent = allInputs[i].closest('[data-testid="stFileUploader"]');
+                                if (parent && parent.closest('#first-uploader-wrapper')) {
+                                    allInputs[i].click();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        })();
+        </script>
         """, unsafe_allow_html=True)
     else:
         st.markdown(f"""

@@ -562,17 +562,39 @@ section[data-testid="stSidebar"]::-webkit-scrollbar-thumb {
 }
 
 /* ============================================
-   上传文件组件
+   上传文件组件 - 第一个上传区（原PPT）隐藏默认UI
    ============================================ */
-.stFileUploader {
+.first-uploader {
     background: transparent !important;
     border: none !important;
     padding: 0 !important;
     border-radius: 0 !important;
 }
 
-.stFileUploader [data-testid="stFileUploaderDropzone"] {
+.first-uploader [data-testid="stFileUploaderDropzone"] {
     display: none !important;
+}
+
+/* 第二个上传区（模板）保留默认样式 */
+.config-card .stFileUploader {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+}
+
+.config-card .stFileUploader [data-testid="stFileUploaderDropzone"] {
+    display: block !important;
+    border: 2px dashed var(--se-border-1) !important;
+    border-radius: var(--radius-sm) !important;
+    padding: 16px !important;
+    margin-bottom: 8px !important;
+    background: var(--se-bg-1) !important;
+}
+
+.config-card .stFileUploader [data-testid="stFileUploaderDropzone"]:hover {
+    border-color: var(--se-green) !important;
+    background: var(--se-green-bg) !important;
 }
 
 /* ============================================
