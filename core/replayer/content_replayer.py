@@ -1084,11 +1084,14 @@ class ContentReplayer:
         return False
 
     def _detect_slide_background_darkness(self, slide) -> bool:
-        """检测幻灯片背景是否为深色"""
+        """检测幻灯片背景是否为深色
+        
+        注意：不能访问 slide.background.fill，因为这会自动添加背景元素并中断母版继承
+        而是从模板母版的背景颜色来判断
+        """
         try:
-            if slide.background.fill.type == 1:  # solid
-                color = str(slide.background.fill.fore_color.rgb).upper()
-                return self._is_dark_color(color)
+            if self.background_color:
+                return self._is_dark_color(self.background_color)
         except Exception:
             pass
         
@@ -3623,22 +3626,13 @@ class ContentReplayer:
 
         技术适配原则：删除幻灯片的背景定义，让它继承母版背景
         母版背景已经在母版复制时正确设置
+        
+        使用 slide.follow_master_background = True 来恢复母版背景继承
+        这是python-pptx提供的标准方法，比手动操作XML更可靠
         """
         try:
-            # 删除幻灯片XML中的背景定义，让它继承母版背景
-            nsmap = {
-                'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
-                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
-            }
-            slide_elem = slide._element
-
-            # 查找cSld元素（幻灯片内容的容器）
-            cSld = slide_elem.find('.//p:cSld', nsmap)
-            if cSld is not None:
-                # 在cSld下查找并删除bg元素
-                bg = cSld.find('p:bg', nsmap)
-                if bg is not None:
-                    cSld.remove(bg)
+            # 设置为True会删除任何自定义背景并恢复母版继承
+            slide.follow_master_background = True
         except Exception:
             pass
 
