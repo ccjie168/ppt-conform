@@ -82,6 +82,21 @@ class ContentReplayer:
                         srgbClr = solidFill.find('.//a:srgbClr', nsmap)
                         if srgbClr is not None:
                             self.background_color = srgbClr.get("val")
+                
+                # 尝试从渐变背景获取颜色
+                gradFill = bgPr.find('.//a:gradFill', nsmap)
+                if gradFill is not None and not self.background_color:
+                    stop_colors = []
+                    for stop in gradFill.findall('.//a:stop', nsmap):
+                        srgb = stop.find('.//a:srgbClr', nsmap)
+                        if srgb is not None:
+                            stop_colors.append(srgb.get("val"))
+                        scheme = stop.find('.//a:schemeClr', nsmap)
+                        if scheme is not None:
+                            stop_colors.append(scheme.get("val"))
+                    if stop_colors:
+                        self.background_color = stop_colors[0]
+                        self.background_theme_color = stop_colors[0] if any(c in ['bg1', 'bg2', 'dk1', 'dk2', 'lt1', 'lt2'] for c in stop_colors) else None
 
             for shape in master.shapes:
                 try:
@@ -464,7 +479,15 @@ class ContentReplayer:
                     old_layout_rels_path = f'ppt/slideLayouts/_rels/slideLayout{old_layout_num}.xml.rels'
                     new_layout_rels_path = f'ppt/slideLayouts/_rels/slideLayout{new_layout_num}.xml.rels'
                     if old_layout_rels_path in tpl_zip.namelist():
-                        files_to_copy[new_layout_rels_path] = tpl_zip.read(old_layout_rels_path)
+                        layout_rels_xml = tpl_zip.read(old_layout_rels_path)
+                        layout_rels_elem = etree.fromstring(layout_rels_xml)
+                        for rel in layout_rels_elem.findall(f'{{{ns_rels}}}Relationship'):
+                            target = rel.get('Target', '')
+                            if 'theme' in target:
+                                old_theme_num = target.split('theme')[-1].split('.')[0]
+                                if old_theme_num in theme_mapping:
+                                    rel.set('Target', f'../theme/theme{theme_mapping[old_theme_num]}.xml')
+                        files_to_copy[new_layout_rels_path] = etree.tostring(layout_rels_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
 
                 for old_theme_num, new_theme_num in theme_mapping.items():
                     old_theme_path = f'ppt/theme/theme{old_theme_num}.xml'
@@ -667,19 +690,34 @@ class ContentReplayer:
         self._check_and_fix_overflow(slide)
 
     def _is_footer_shape(self, shape, footer_threshold) -> bool:
-        """判断一个形状是否是页脚元素（位于底部区域）"""
+        """判断一个形状是否是页脚元素（位于底部区域）
+        
+        更精确的判断逻辑：
+        1. 页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）总是删除
+        2. 底部区域的小文本框（高度<100pt）可能是页脚
+        3. 底部区域的图片可能是品牌图标
+        4. 排除大尺寸的形状（可能是正常内容）
+        """
         try:
+            if shape.is_placeholder:
+                phf = shape.placeholder_format
+                if phf.type in (13, 14, 15, 16):
+                    return True
+            
             top = shape.top or Emu(0)
             height = shape.height or Emu(0)
             bottom = top + height
 
             if top > footer_threshold or bottom > footer_threshold:
-                if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
-                    return True
-                if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
-                    if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
-                        if shape.text_frame.text.strip():
-                            return True
+                # 小尺寸元素更可能是页脚
+                if height < Emu(360000):  # < 100pt
+                    if shape.shape_type in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.PICTURE):
+                        return True
+                    if shape.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE:
+                        if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                            text = shape.text_frame.text.strip()
+                            if text and len(text) < 50:
+                                return True
             return False
         except Exception:
             return False
@@ -717,14 +755,14 @@ class ContentReplayer:
     def _remove_original_footer(self, slide) -> None:
         """删除原PPT的页脚元素（包括占位符、文本框、图片、自选图形、组）
 
-        删除底部区域（>85%页面高度）的所有页脚相关元素：
+        删除底部区域（>80%页面高度）的所有页脚相关元素：
         - 页脚占位符（13=SLIDE_NUMBER, 14=HEADER, 15=FOOTER, 16=DATE）
         - 底部区域的文本框（如版权信息）
         - 底部区域的图片（如图标）
         - 底部区域带文本的自选图形
         - 底部区域的组形状
         """
-        footer_threshold = self.target_height * 0.85
+        footer_threshold = self.target_height * 0.80
 
         indices_to_remove = self._collect_footer_indices(slide.shapes, footer_threshold)
 
@@ -739,7 +777,7 @@ class ContentReplayer:
     def _remove_master_footer_elements(self, prs) -> None:
         """删除母版中的页脚元素，确保原PPT的页脚不影响输出"""
         page_height = prs.slide_height
-        footer_threshold = page_height * 0.85
+        footer_threshold = page_height * 0.80
 
         for master in prs.slide_masters:
             indices_to_remove = self._collect_footer_indices(master.shapes, footer_threshold)
