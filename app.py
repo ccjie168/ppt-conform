@@ -366,128 +366,14 @@ if current_page == "convert":
     st.markdown('<p class="page-subtitle">上传 PPT 文件，智能转换为标准企业模板格式</p>', unsafe_allow_html=True)
     
     # ---------- 上传区域 ----------
-    # 文件上传器（使用Streamlit原生组件，隐藏默认样式）
     uploaded_file = st.file_uploader(
-        " ",
+        "点击或拖拽上传 PPT 文件",
         type=["pptx"],
         key="input_ppt",
-        label_visibility="collapsed",
+        label_visibility="visible",
     )
     
-    # 自定义上传卡片（使用纯HTML/JS实现上传功能）
-    if uploaded_file is None:
-        st.markdown("""
-        <div class="upload-card-wrapper" id="upload-card-container">
-            <div class="upload-card" id="custom-upload-card">
-                <div class="upload-card-icon">📁</div>
-                <div class="upload-card-title">点击或拖拽上传 PPT 文件</div>
-                <div class="upload-card-desc">支持 .pptx 格式</div>
-            </div>
-            <input type="file" id="hidden-file-input" accept=".pptx" style="display: none;">
-        </div>
-        <script>
-        (function() {
-            var card = document.getElementById('custom-upload-card');
-            var hiddenInput = document.getElementById('hidden-file-input');
-            var targetUploader = null;
-            
-            // 使用MutationObserver等待文件上传器出现
-            var observer = new MutationObserver(function(mutations) {
-                if (targetUploader) return;
-                
-                var fileUploaders = document.querySelectorAll('[data-testid="stFileUploader"]');
-                for (var i = 0; i < fileUploaders.length; i++) {
-                    var input = fileUploaders[i].querySelector('input[type="file"]');
-                    var dropzone = fileUploaders[i].querySelector('[data-testid="stFileUploaderDropzone"]');
-                    
-                    if (input && input.accept.includes('pptx')) {
-                        targetUploader = input;
-                        
-                        // 隐藏dropzone显示
-                        if (dropzone) {
-                            dropzone.style.display = 'none';
-                        }
-                        
-                        observer.disconnect();
-                        break;
-                    }
-                }
-            });
-            
-            observer.observe(document.body, { childList: true, subtree: true });
-            
-            // 同时也设置一个定时器作为备用
-            setTimeout(function() {
-                if (!targetUploader) {
-                    var fileUploaders = document.querySelectorAll('[data-testid="stFileUploader"]');
-                    for (var i = 0; i < fileUploaders.length; i++) {
-                        var input = fileUploaders[i].querySelector('input[type="file"]');
-                        var dropzone = fileUploaders[i].querySelector('[data-testid="stFileUploaderDropzone"]');
-                        
-                        if (input && input.accept.includes('pptx')) {
-                            targetUploader = input;
-                            if (dropzone) {
-                                dropzone.style.display = 'none';
-                            }
-                            break;
-                        }
-                    }
-                }
-            }, 500);
-            
-            // 点击卡片触发文件选择
-            card.addEventListener('click', function(e) {
-                e.preventDefault();
-                if (targetUploader) {
-                    targetUploader.click();
-                } else if (hiddenInput) {
-                    hiddenInput.click();
-                }
-            });
-            
-            // 隐藏输入框的change事件处理
-            if (hiddenInput) {
-                hiddenInput.addEventListener('change', function(e) {
-                    if (targetUploader && this.files.length > 0) {
-                        targetUploader.files = this.files;
-                        targetUploader.dispatchEvent(new Event('change'));
-                    }
-                });
-            }
-            
-            // 拖拽事件处理
-            ['dragenter', 'dragover'].forEach(function(eventName) {
-                card.addEventListener(eventName, function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    card.classList.add('dragging');
-                }, false);
-            });
-            
-            ['dragleave', 'drop'].forEach(function(eventName) {
-                card.addEventListener(eventName, function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    card.classList.remove('dragging');
-                }, false);
-            });
-            
-            // drop事件处理
-            card.addEventListener('drop', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                card.classList.remove('dragging');
-                
-                var files = e.dataTransfer.files;
-                if (files.length > 0 && targetUploader) {
-                    targetUploader.files = files;
-                    targetUploader.dispatchEvent(new Event('change'));
-                }
-            }, false);
-        })();
-        </script>
-        """, unsafe_allow_html=True)
-    else:
+    if uploaded_file is not None:
         st.markdown(f"""
         <div class="upload-card-wrapper">
             <div class="upload-card uploaded">
