@@ -302,9 +302,9 @@ with st.sidebar:
     st.markdown("""
     <div style="position: absolute; bottom: 0; left: 0; right: 0; padding: 16px; border-top: 1px solid #E2E8F0; background: #fff;">
         <div style="display: flex; align-items: center; gap: 10px;">
-            <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #3DCD58 0%, #2EAE4A 100%); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 13px; flex-shrink: 0;">AC</div>
+            <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #3DCD58 0%, #2EAE4A 100%); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 13px; flex-shrink: 0;">JC</div>
             <div style="flex: 1; min-width: 0;">
-                <div style="font-size: 13px; font-weight: 600; color: #1A1A1A; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Alex Chen</div>
+                <div style="font-size: 13px; font-weight: 600; color: #1A1A1A; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">JC</div>
                 <div style="font-size: 11px; color: #718096;">设计部</div>
             </div>
         </div>
