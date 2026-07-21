@@ -3619,44 +3619,28 @@ class ContentReplayer:
             sp.getparent().remove(sp)
 
     def _apply_background_to_slide(self, slide):
-        """应用背景色或渐变"""
-        if self.background_image:
-            self._add_background_image(slide)
-        elif self.background_theme_color:
-            try:
-                from pptx.enum.dml import MSO_THEME_COLOR
-                theme_color_map = {
-                    'bg1': MSO_THEME_COLOR.BACKGROUND_1,
-                    'bg2': MSO_THEME_COLOR.BACKGROUND_2,
-                    'tx1': MSO_THEME_COLOR.TEXT_1,
-                    'tx2': MSO_THEME_COLOR.TEXT_2,
-                    'accent1': MSO_THEME_COLOR.ACCENT_1,
-                    'accent2': MSO_THEME_COLOR.ACCENT_2,
-                    'accent3': MSO_THEME_COLOR.ACCENT_3,
-                    'accent4': MSO_THEME_COLOR.ACCENT_4,
-                    'accent5': MSO_THEME_COLOR.ACCENT_5,
-                    'accent6': MSO_THEME_COLOR.ACCENT_6,
-                    'lt1': MSO_THEME_COLOR.LIGHT_1,
-                    'lt2': MSO_THEME_COLOR.LIGHT_2,
-                    'dk1': MSO_THEME_COLOR.DARK_1,
-                    'dk2': MSO_THEME_COLOR.DARK_2,
-                }
-                mso_color = theme_color_map.get(self.background_theme_color.lower())
-                if mso_color is not None:
-                    bg = slide.background
-                    fill = bg.fill
-                    fill.solid()
-                    fill.fore_color.theme_color = mso_color
-            except Exception:
-                pass
-        elif self.background_color:
-            try:
-                bg = slide.background
-                fill = bg.fill
-                fill.solid()
-                fill.fore_color.rgb = RGBColor.from_string(self.background_color)
-            except Exception:
-                pass
+        """应用背景色或渐变 - 技术适配模式
+
+        技术适配原则：删除幻灯片的背景定义，让它继承母版背景
+        母版背景已经在母版复制时正确设置
+        """
+        try:
+            # 删除幻灯片XML中的背景定义，让它继承母版背景
+            nsmap = {
+                'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
+                'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+            }
+            slide_elem = slide._element
+
+            # 查找cSld元素（幻灯片内容的容器）
+            cSld = slide_elem.find('.//p:cSld', nsmap)
+            if cSld is not None:
+                # 在cSld下查找并删除bg元素
+                bg = cSld.find('p:bg', nsmap)
+                if bg is not None:
+                    cSld.remove(bg)
+        except Exception:
+            pass
 
     def _unify_fonts_and_colors_on_slide(self, slide):
         """统一字体和颜色"""
