@@ -784,3 +784,42 @@ elif current_page == "help":
         <div style="font-size: 12px; color: #A0AEC0;">Schneider Electric · PPT 标准模板转换工具</div>
     </div>
     """, unsafe_allow_html=True)
+
+
+# ============================================
+#   全局底部版本信息
+# ============================================
+version_bar_text = f"Commit: <code>{APP_VERSION}</code>"
+if APP_VERSION_DATE:
+    version_bar_text += f" &nbsp;|&nbsp; {APP_VERSION_DATE}"
+
+st.markdown(f"""
+<style>
+.version-bar {{
+    position: fixed;
+    bottom: 0;
+    left: var(--sidebar-width, 240px);
+    right: 0;
+    padding: 10px 24px;
+    background: #FFFFFF;
+    border-top: 1px solid #E2E8F0;
+    font-size: 12px;
+    color: #718096;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+    box-shadow: 0 -1px 3px rgba(0,0,0,0.04);
+}}
+
+@media (max-width: 768px) {{
+    .version-bar {{
+        left: 0;
+        padding: 8px 16px;
+    }}
+}}
+</style>
+<div class="version-bar">
+    {version_bar_text}
+</div>
+""", unsafe_allow_html=True)
