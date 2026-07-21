@@ -389,34 +389,51 @@ if current_page == "convert":
         (function() {
             var card = document.getElementById('custom-upload-card');
             var hiddenInput = document.getElementById('hidden-file-input');
-            
-            // 找到所有Streamlit文件上传器
-            var fileUploaders = document.querySelectorAll('[data-testid="stFileUploader"]');
             var targetUploader = null;
-            var targetDropzone = null;
             
-            for (var i = 0; i < fileUploaders.length; i++) {
-                var input = fileUploaders[i].querySelector('input[type="file"]');
-                var dropzone = fileUploaders[i].querySelector('[data-testid="stFileUploaderDropzone"]');
+            // 使用MutationObserver等待文件上传器出现
+            var observer = new MutationObserver(function(mutations) {
+                if (targetUploader) return;
                 
-                if (input && input.accept.includes('pptx')) {
-                    targetUploader = input;
-                    targetDropzone = dropzone;
-                    break;
+                var fileUploaders = document.querySelectorAll('[data-testid="stFileUploader"]');
+                for (var i = 0; i < fileUploaders.length; i++) {
+                    var input = fileUploaders[i].querySelector('input[type="file"]');
+                    var dropzone = fileUploaders[i].querySelector('[data-testid="stFileUploaderDropzone"]');
+                    
+                    if (input && input.accept.includes('pptx')) {
+                        targetUploader = input;
+                        
+                        // 隐藏dropzone显示
+                        if (dropzone) {
+                            dropzone.style.display = 'none';
+                        }
+                        
+                        observer.disconnect();
+                        break;
+                    }
                 }
-            }
+            });
             
-            // 隐藏第一个文件上传器的dropzone（保留功能）
-            if (targetDropzone) {
-                targetDropzone.style.display = 'none';
-                targetDropzone.style.position = 'absolute';
-                targetDropzone.style.top = '0';
-                targetDropzone.style.left = '0';
-                targetDropzone.style.width = '100%';
-                targetDropzone.style.height = '100%';
-                targetDropzone.style.opacity = '0';
-                targetDropzone.style.zIndex = '10';
-            }
+            observer.observe(document.body, { childList: true, subtree: true });
+            
+            // 同时也设置一个定时器作为备用
+            setTimeout(function() {
+                if (!targetUploader) {
+                    var fileUploaders = document.querySelectorAll('[data-testid="stFileUploader"]');
+                    for (var i = 0; i < fileUploaders.length; i++) {
+                        var input = fileUploaders[i].querySelector('input[type="file"]');
+                        var dropzone = fileUploaders[i].querySelector('[data-testid="stFileUploaderDropzone"]');
+                        
+                        if (input && input.accept.includes('pptx')) {
+                            targetUploader = input;
+                            if (dropzone) {
+                                dropzone.style.display = 'none';
+                            }
+                            break;
+                        }
+                    }
+                }
+            }, 500);
             
             // 点击卡片触发文件选择
             card.addEventListener('click', function(e) {
@@ -466,17 +483,6 @@ if current_page == "convert":
                     targetUploader.files = files;
                     targetUploader.dispatchEvent(new Event('change'));
                 }
-            }, false);
-            
-            // 让卡片区域接受拖拽
-            card.addEventListener('dragenter', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-            }, false);
-            
-            card.addEventListener('dragover', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
             }, false);
         })();
         </script>
