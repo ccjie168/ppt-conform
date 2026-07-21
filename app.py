@@ -366,18 +366,7 @@ if current_page == "convert":
     st.markdown('<p class="page-subtitle">上传 PPT 文件，智能转换为标准企业模板格式</p>', unsafe_allow_html=True)
     
     # ---------- 上传区域 ----------
-    # 自定义上传卡片（始终显示）
-    st.markdown("""
-    <div class="upload-card-wrapper" id="upload-card-container">
-        <div class="upload-card" id="custom-upload-card">
-            <div class="upload-card-icon">📁</div>
-            <div class="upload-card-title">点击或拖拽上传 PPT 文件</div>
-            <div class="upload-card-desc">支持 .pptx 格式</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # 文件上传器（隐藏在卡片下方）
+    # 文件上传器（使用Streamlit原生组件，隐藏默认样式）
     uploaded_file = st.file_uploader(
         " ",
         type=["pptx"],
@@ -385,29 +374,71 @@ if current_page == "convert":
         label_visibility="collapsed",
     )
     
-    # 已上传状态：更新卡片内容
-    if uploaded_file is not None:
+    # 自定义上传卡片（使用纯HTML/JS实现上传功能）
+    if uploaded_file is None:
         st.markdown("""
+        <div class="upload-card-wrapper" id="upload-card-container">
+            <div class="upload-card" id="custom-upload-card">
+                <div class="upload-card-icon">📁</div>
+                <div class="upload-card-title">点击或拖拽上传 PPT 文件</div>
+                <div class="upload-card-desc">支持 .pptx 格式</div>
+            </div>
+            <input type="file" id="hidden-file-input" accept=".pptx" style="display: none;">
+        </div>
         <script>
         (function() {
             var card = document.getElementById('custom-upload-card');
-            if (card) {
-                card.classList.add('uploaded');
-                card.innerHTML = '<div class="upload-card-icon">✅</div>' +
-                    '<div class="upload-card-title">""" + uploaded_file.name + """</div>' +
-                    '<div class="upload-card-desc">""" + str(round(uploaded_file.size / 1024, 1)) + """ KB · 已上传</div>';
+            var hiddenInput = document.getElementById('hidden-file-input');
+            
+            // 找到所有Streamlit文件上传器
+            var fileUploaders = document.querySelectorAll('[data-testid="stFileUploader"]');
+            var targetUploader = null;
+            var targetDropzone = null;
+            
+            for (var i = 0; i < fileUploaders.length; i++) {
+                var input = fileUploaders[i].querySelector('input[type="file"]');
+                var dropzone = fileUploaders[i].querySelector('[data-testid="stFileUploaderDropzone"]');
+                
+                if (input && input.accept.includes('pptx')) {
+                    targetUploader = input;
+                    targetDropzone = dropzone;
+                    break;
+                }
             }
-        })();
-        </script>
-        """, unsafe_allow_html=True)
-    
-    # JavaScript绑定事件（拖拽视觉反馈）
-    st.markdown("""
-    <script>
-    (function() {
-        var card = document.getElementById('custom-upload-card');
-        
-        if (card) {
+            
+            // 隐藏第一个文件上传器的dropzone（保留功能）
+            if (targetDropzone) {
+                targetDropzone.style.display = 'none';
+                targetDropzone.style.position = 'absolute';
+                targetDropzone.style.top = '0';
+                targetDropzone.style.left = '0';
+                targetDropzone.style.width = '100%';
+                targetDropzone.style.height = '100%';
+                targetDropzone.style.opacity = '0';
+                targetDropzone.style.zIndex = '10';
+            }
+            
+            // 点击卡片触发文件选择
+            card.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (targetUploader) {
+                    targetUploader.click();
+                } else if (hiddenInput) {
+                    hiddenInput.click();
+                }
+            });
+            
+            // 隐藏输入框的change事件处理
+            if (hiddenInput) {
+                hiddenInput.addEventListener('change', function(e) {
+                    if (targetUploader && this.files.length > 0) {
+                        targetUploader.files = this.files;
+                        targetUploader.dispatchEvent(new Event('change'));
+                    }
+                });
+            }
+            
+            // 拖拽事件处理
             ['dragenter', 'dragover'].forEach(function(eventName) {
                 card.addEventListener(eventName, function(e) {
                     e.preventDefault();
@@ -423,10 +454,43 @@ if current_page == "convert":
                     card.classList.remove('dragging');
                 }, false);
             });
-        }
-    })();
-    </script>
-    """, unsafe_allow_html=True)
+            
+            // drop事件处理
+            card.addEventListener('drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                card.classList.remove('dragging');
+                
+                var files = e.dataTransfer.files;
+                if (files.length > 0 && targetUploader) {
+                    targetUploader.files = files;
+                    targetUploader.dispatchEvent(new Event('change'));
+                }
+            }, false);
+            
+            // 让卡片区域接受拖拽
+            card.addEventListener('dragenter', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+            
+            card.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+        })();
+        </script>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div class="upload-card-wrapper">
+            <div class="upload-card uploaded">
+                <div class="upload-card-icon">✅</div>
+                <div class="upload-card-title">{uploaded_file.name}</div>
+                <div class="upload-card-desc">{uploaded_file.size / 1024:.1f} KB · 已上传</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     # ---------- 转换配置卡片 ----------
     st.markdown('<div class="config-card animate-fade-in">', unsafe_allow_html=True)
