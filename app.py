@@ -20,7 +20,6 @@ ASPECT_RATIO_TOLERANCE = 0.02
 
 
 def _get_git_commit() -> str:
-    """获取当前 git commit 哈希（短格式）"""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -37,7 +36,6 @@ def _get_git_commit() -> str:
 
 
 def _get_git_commit_date() -> str:
-    """获取当前 git commit 日期"""
     try:
         result = subprocess.run(
             ["git", "log", "-1", "--format=%cd", "--date=format:%Y-%m-%d"],
@@ -57,38 +55,12 @@ APP_VERSION = _get_git_commit()
 APP_VERSION_DATE = _get_git_commit_date()
 
 
-def _check_template_aspect_ratio(template_file) -> tuple[bool, str, str]:
-    """检查模板尺寸是否合法。
-    
-    不再强制要求16:9比例，保留原PPT的任意比例进行技术适配。
-    
-    返回: (是否通过, 比例描述, 错误消息)
-    """
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-            tmp_path = tmp.name
-            if hasattr(template_file, "getbuffer"):
-                tmp.write(template_file.getbuffer())
-            else:
-                tmp.write(template_file)
-
-        prs = Presentation(tmp_path)
-        width = prs.slide_width
-        height = prs.slide_height
-        ratio = width / height if height else 0
-
-        os.unlink(tmp_path)
-
-        ratio_str = f"{width / 914400:.2f} x {height / 914400:.2f} 英寸 (比例 {ratio:.3f})"
-        return True, ratio_str, ""
-    except Exception as e:
-        return False, "", f"模板尺寸检查失败: {str(e)}"
-
 st.set_page_config(
-    page_title="施耐德 PPT 模板转换工具",
+    page_title="PPT 标准模板转换",
     page_icon="⚡",
     layout="wide"
 )
+
 
 def _load_css():
     css_path = Path(__file__).parent / "static" / "schneider_style.css"
@@ -97,17 +69,8 @@ def _load_css():
             css = f.read()
         st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
-_load_css()
 
-st.markdown("""
-<div class="schneider-header">
-    <div class="schneider-logo">SE<span>｜</span></div>
-    <div class="schneider-header-text">
-        <h1 style="margin:0;padding:0;font-size:24px;font-weight:700;color:#1A1A1A;">PPT 标准模板转换工具</h1>
-        <p style="margin:4px 0 0 0;color:#666666;font-size:13px;">Schneider Electric · 品牌一致性 · 技术适配模式</p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+_load_css()
 
 
 def _is_light_color(hex_color: str) -> bool:
@@ -183,9 +146,31 @@ def _clear_last_template():
         os.remove(LAST_TEMPLATE_FILE)
     if os.path.exists(LAST_CONFIG_FILE):
         os.remove(LAST_CONFIG_FILE)
-    for key in ["_template_content", "_template_name", "_template_size"]:
+    for key in ["_template_content", "_template_name", "_template_size", "_template_cache_key", "_template_analysis", "_template_file"]:
         if key in st.session_state:
             del st.session_state[key]
+
+
+def _check_template_aspect_ratio(template_file) -> tuple[bool, str, str]:
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            tmp_path = tmp.name
+            if hasattr(template_file, "getbuffer"):
+                tmp.write(template_file.getbuffer())
+            else:
+                tmp.write(template_file)
+
+        prs = Presentation(tmp_path)
+        width = prs.slide_width
+        height = prs.slide_height
+        ratio = width / height if height else 0
+
+        os.unlink(tmp_path)
+
+        ratio_str = f"{width / 914400:.2f} x {height / 914400:.2f} 英寸 (比例 {ratio:.3f})"
+        return True, ratio_str, ""
+    except Exception as e:
+        return False, "", f"模板尺寸检查失败: {str(e)}"
 
 
 def _analyze_template_file(template_file, is_reload=False) -> dict | None:
@@ -271,65 +256,179 @@ def _load_last_template():
         return None, None
 
 
-# ============ 全局模板上传（两个 tab 共用） ============
-st.markdown('<div class="section-title"><h2>上传公司标准模板（全局共享）</h2></div>', unsafe_allow_html=True)
-st.markdown("上传一次模板，下方「PPT 转换」和「模板分析」两个页签将共用此模板，无需重复上传。应用会自动记住上次使用的模板，下次打开页面时直接使用。")
+# ============================================
+#   侧边栏
+# ============================================
+with st.sidebar:
+    st.markdown("""
+    <div class="sidebar-brand">
+        <div class="sidebar-brand-icon">✓</div>
+        <div>
+            <div class="sidebar-brand-text">Schneider</div>
+            <div class="sidebar-brand-sub">PPT 转换工具</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 导航菜单
+    st.markdown('<div class="sidebar-nav">', unsafe_allow_html=True)
+    
+    nav_items = [
+        {"icon": "🔄", "label": "模板转换", "key": "convert"},
+        {"icon": "📋", "label": "历史记录", "key": "history"},
+        {"icon": "📁", "label": "模板管理", "key": "templates"},
+        {"icon": "📖", "label": "使用说明", "key": "help"},
+    ]
+    
+    if "current_page" not in st.session_state:
+        st.session_state["current_page"] = "convert"
+    
+    for item in nav_items:
+        is_active = st.session_state.get("current_page") == item["key"]
+        active_class = "active" if is_active else ""
+        
+        if st.button(
+            f"{item['icon']}  {item['label']}",
+            key=f"nav_{item['key']}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ):
+            st.session_state["current_page"] = item["key"]
+            st.rerun()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # 底部用户区
+    st.markdown("""
+    <div style="position: absolute; bottom: 0; left: 0; right: 0; padding: 16px; border-top: 1px solid #E2E8F0; background: #fff;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #3DCD58 0%, #2EAE4A 100%); display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 13px; flex-shrink: 0;">AC</div>
+            <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 13px; font-weight: 600; color: #1A1A1A; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Alex Chen</div>
+                <div style="font-size: 11px; color: #718096;">设计部</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-col_upload, col_reload = st.columns([3, 1])
 
-with col_upload:
-    global_template = st.file_uploader(
-        "选择公司标准模板 PPT（技术适配模式，保留原PPT比例）",
+current_page = st.session_state.get("current_page", "convert")
+
+
+# ============================================
+#   页面 1: 模板转换
+# ============================================
+if current_page == "convert":
+    st.markdown('<h1 class="page-title">PPT 标准模板转换</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="page-subtitle">上传 PPT 文件，智能转换为标准企业模板格式</p>', unsafe_allow_html=True)
+    
+    # ---------- 上传区域 ----------
+    uploaded_file = st.file_uploader(
+        " ",
         type=["pptx"],
-        key="global_template",
-        help="此模板将在 PPT 转换和模板分析两个页签中共用。技术适配模式保留原PPT的版式和比例，不会强制套用模板。",
+        key="input_ppt",
+        label_visibility="collapsed",
     )
-
-with col_reload:
-    st.write("")
-    st.write("")
-    use_last_template = st.button(
-        "📋 使用上次模板",
-        disabled=not _has_last_template(),
-        key="use_last_template",
-        help="使用上次上传的模板",
-    )
-
-auto_load_done = False
-
-if global_template is not None:
-    is_valid, ratio_str, err_msg = _check_template_aspect_ratio(global_template)
-    if not is_valid:
-        st.error(err_msg)
-        # 清理已保存的4:3模板，避免后续误用
-        _clear_last_template()
-        global_template = None
+    
+    # 自定义上传卡片
+    if uploaded_file is None:
+        st.markdown("""
+        <div class="upload-card">
+            <div class="upload-card-icon">📁</div>
+            <div class="upload-card-title">点击或拖拽上传 PPT 文件</div>
+            <div class="upload-card-desc">支持 .pptx 格式</div>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.success(f"✅ 已上传模板：{global_template.name}（{global_template.size / 1024:.1f} KB） - 技术适配 ({ratio_str})")
-        _save_template(global_template)
-        _analyze_template_file(global_template)
-        auto_load_done = True
-elif use_last_template:
-    mock_file, config = _load_last_template()
-    if mock_file:
-        is_valid, ratio_str, err_msg = _check_template_aspect_ratio(mock_file)
+        st.markdown(f"""
+        <div class="upload-card uploaded">
+            <div class="upload-card-icon">✅</div>
+            <div class="upload-card-title">{uploaded_file.name}</div>
+            <div class="upload-card-desc">{uploaded_file.size / 1024:.1f} KB · 已上传</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # ---------- 转换配置卡片 ----------
+    st.markdown('<div class="config-card animate-fade-in">', unsafe_allow_html=True)
+    st.markdown('<div class="config-card-title">转换配置</div>', unsafe_allow_html=True)
+    
+    # 风格选择
+    master_options = []
+    template_analysis = st.session_state.get("_template_analysis")
+    
+    if template_analysis is not None:
+        for m in template_analysis["masters"]:
+            bg = m["background"]
+            display_color = bg.get("display_color", "")
+            if display_color and isinstance(display_color, list):
+                display_color = display_color[0] if display_color else ""
+            master_options.append({
+                "index": m["index"],
+                "name": m["name"],
+                "style_id": m.get("style_id", "?"),
+                "style_name": m.get("style_name", "未知风格"),
+                "style_desc": m.get("style_desc", ""),
+                "display_color": display_color,
+                "bg_type": bg.get("type", ""),
+                "bg_color": bg.get("color", ""),
+                "bg_gradient": bg.get("gradient", []),
+            })
+    
+    selected_master_index = st.session_state.get("selected_master", 0)
+    
+    if master_options:
+        option_labels = [f"{m['style_name']}" for m in master_options]
+        selected_idx = st.selectbox(
+            "风格选择",
+            options=range(len(option_labels)),
+            format_func=lambda i: option_labels[i],
+            index=selected_master_index if selected_master_index < len(option_labels) else 0,
+            key="style_select",
+        )
+        selected_master_index = master_options[selected_idx]["index"]
+        st.session_state["selected_master"] = selected_master_index
+    else:
+        st.selectbox(
+            "风格选择",
+            options=["请先上传模板"],
+            index=0,
+            disabled=True,
+            key="style_select_disabled",
+        )
+        selected_master_index = 0
+    
+    # 模板上传
+    st.markdown('<div style="margin-top: 20px;"></div>', unsafe_allow_html=True)
+    
+    template_col1, template_col2 = st.columns([3, 1])
+    with template_col1:
+        global_template = st.file_uploader(
+            "模板选择",
+            type=["pptx"],
+            key="global_template",
+            help="上传公司标准模板 PPT 文件",
+        )
+    with template_col2:
+        st.write("")
+        st.write("")
+        use_last = st.button(
+            "使用上次",
+            disabled=not _has_last_template(),
+            key="use_last_template",
+            use_container_width=True,
+        )
+    
+    if global_template is not None:
+        is_valid, ratio_str, err_msg = _check_template_aspect_ratio(global_template)
         if not is_valid:
             st.error(err_msg)
             _clear_last_template()
+            global_template = None
         else:
-            st.success(f"✅ 已加载上次模板：{mock_file.name}（{mock_file.size / 1024:.1f} KB） - 技术适配 ({ratio_str})")
-            _analyze_template_file(mock_file, is_reload=True)
-            global_template = mock_file
-            auto_load_done = True
-else:
-    last_info = _get_last_template_info()
-    if last_info and _has_last_template():
-        st.info(f"📋 上次使用的模板：{last_info['name']}（{last_info['size'] / 1024:.1f} KB）")
-        st.info("点击「使用上次模板」按钮快速加载，或上传新模板替换")
-    else:
-        st.info("👆 请上传公司标准模板（仅支持 16:9 宽屏），上传后将自动识别其中的风格")
-
-    if st.session_state.get("_template_cache_key") is None and _has_last_template():
+            st.success(f"✅ 模板已加载（{ratio_str}）")
+            _save_template(global_template)
+            _analyze_template_file(global_template)
+    elif use_last:
         mock_file, config = _load_last_template()
         if mock_file:
             is_valid, ratio_str, err_msg = _check_template_aspect_ratio(mock_file)
@@ -337,152 +436,81 @@ else:
                 st.error(err_msg)
                 _clear_last_template()
             else:
+                st.success(f"✅ 已加载上次模板（{ratio_str}）")
                 _analyze_template_file(mock_file, is_reload=True)
                 global_template = mock_file
-                auto_load_done = True
-
-if auto_load_done and global_template:
-    template_info = st.session_state.get("_template_file")
-    if template_info:
-        st.markdown(f"📎 **当前使用的标准模板**: {template_info['name']}")
-
-st.markdown("---")
-
-tab1, tab2 = st.tabs(["  🔄 PPT 转换  ", "  🔍 模板分析  "])
-
-
-# ============ Tab 1: PPT 转换 ============
-with tab1:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown('<div class="section-title"><h3>上传待转换的 PPT</h3></div>', unsafe_allow_html=True)
-        uploaded_file = st.file_uploader("选择要转换的 PPT 文件", type=["pptx"], key="input_ppt")
-
+    else:
+        last_info = _get_last_template_info()
+        if last_info and _has_last_template():
+            st.info(f"📋 上次模板：{last_info['name']}")
+            if st.session_state.get("_template_cache_key") is None:
+                mock_file, config = _load_last_template()
+                if mock_file:
+                    _analyze_template_file(mock_file, is_reload=True)
+                    global_template = mock_file
+    
+    # 开关选项
+    st.markdown('<div style="margin-top: 20px;"></div>', unsafe_allow_html=True)
+    
+    include_header = st.checkbox(
+        "保留原始图片",
+        value=st.session_state.get("include_header", False),
+        key="include_header",
+    )
+    include_footer = st.checkbox(
+        "应用页眉与页脚",
+        value=st.session_state.get("include_footer", False),
+        key="include_footer",
+    )
+    include_icon = st.checkbox(
+        "统一字体样式",
+        value=st.session_state.get("include_icon", False),
+        key="include_icon",
+    )
+    
+    _save_config({
+        "template_name": st.session_state.get("_template_file", {}).get("name", ""),
+        "selected_master": selected_master_index,
+        "include_header": include_header,
+        "include_footer": include_footer,
+        "include_icon": include_icon,
+    })
+    
+    # 补充说明
+    st.markdown('<div style="margin-top: 20px;"></div>', unsafe_allow_html=True)
+    notes = st.text_area(
+        "补充说明",
+        placeholder="可选：输入补充转换要求",
+        height=80,
+        key="notes_textarea",
+    )
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # ---------- 底部操作栏 ----------
+    st.markdown('<div class="action-bar">', unsafe_allow_html=True)
+    
+    reset_col, convert_col = st.columns([1, 1])
+    with reset_col:
+        if st.button("重置", use_container_width=True, key="reset_btn"):
+            for key in list(st.session_state.keys()):
+                if key not in ["current_page"]:
+                    del st.session_state[key]
+            st.rerun()
+    with convert_col:
         template_info = st.session_state.get("_template_file")
-        if template_info:
-            st.markdown(f"📎 **当前使用的标准模板**: {template_info['name']}")
-        else:
-            st.warning("⚠️ 请先在页面上方上传公司标准模板")
-
-    with col2:
-        st.markdown('<div class="section-title"><h3>转换配置</h3></div>', unsafe_allow_html=True)
-
-        master_options = []
-        template_analysis = st.session_state.get("_template_analysis")
-
-        if template_analysis is not None:
-            for m in template_analysis["masters"]:
-                bg = m["background"]
-                display_color = bg.get("display_color", "")
-                if display_color and isinstance(display_color, list):
-                    display_color = display_color[0] if display_color else ""
-                master_options.append({
-                    "index": m["index"],
-                    "name": m["name"],
-                    "style_id": m.get("style_id", "?"),
-                    "style_name": m.get("style_name", "未知风格"),
-                    "style_desc": m.get("style_desc", ""),
-                    "display_color": display_color,
-                    "bg_type": bg.get("type", ""),
-                    "bg_color": bg.get("color", ""),
-                    "bg_gradient": bg.get("gradient", []),
-                })
-
-        if master_options:
-            st.markdown('<div class="section-title"><h3>选择模板风格</h3></div>', unsafe_allow_html=True)
-            st.markdown("根据上传的公司模板，已识别出以下风格，点击卡片选择：")
-
-            num_cols = min(2, len(master_options))
-            cols = st.columns(num_cols)
-            selected_master_index = st.session_state.get("selected_master", 0)
-
-            for i, option in enumerate(master_options):
-                with cols[i % num_cols]:
-                    bg_display = option.get("display_color", "")
-                    is_selected = selected_master_index == option["index"]
-                    selected_class = "selected" if is_selected else ""
-
-                    if bg_display:
-                        bg_hex = f"#{bg_display}" if bg_display and not bg_display.startswith("#") else bg_display
-                        text_color = "#1A1A1A" if _is_light_color(bg_display) else "#FFFFFF"
-                        
-                        st.markdown(f"""
-                        <div class="template-card {selected_class}">
-                            <div class="template-card-preview" style="background-color: {bg_hex};">
-                                {f'<div class="template-card-badge">已选择</div>' if is_selected else ''}
-                                <div style="color:{text_color};font-size:13px;font-weight:600;opacity:0.9;">
-                                    {option['bg_type'].upper() if option.get('bg_type') else ''}
-                                </div>
-                            </div>
-                            <div class="template-card-content">
-                                <div class="template-card-name">{option['style_name']}</div>
-                                <div class="template-card-desc">{option['style_desc']}</div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"""
-                        <div class="template-card {selected_class}">
-                            <div class="template-card-preview" style="background-color: #F5F5F5;">
-                                {f'<div class="template-card-badge">已选择</div>' if is_selected else ''}
-                                <div style="color:#999;font-size:13px;">预览</div>
-                            </div>
-                            <div class="template-card-content">
-                                <div class="template-card-name">{option['style_name']}</div>
-                                <div class="template-card-desc">{option['style_desc']}</div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-
-                    if st.button(
-                        f"选择此风格",
-                        key=f"master_btn_{option['index']}",
-                        use_container_width=True,
-                        type="primary" if is_selected else "secondary",
-                    ):
-                        _save_config({
-                            "template_name": st.session_state.get("_template_file", {}).get("name", ""),
-                            "selected_master": option["index"],
-                            "include_header": st.session_state.get("include_header", False),
-                            "include_footer": st.session_state.get("include_footer", False),
-                            "include_icon": st.session_state.get("include_icon", False),
-                        })
-                        st.session_state["selected_master"] = option["index"]
-                        st.rerun()
-
-            st.info(f"**当前选择**: Master #{selected_master_index} - {master_options[selected_master_index]['style_name']}")
-        else:
-            st.warning("请先在页面上方上传公司标准模板，风格列表将自动加载")
-            selected_master_index = 0
-
-        include_header = st.checkbox("包含页眉", value=st.session_state.get("include_header", False), key="include_header")
-        include_footer = st.checkbox("包含页脚", value=st.session_state.get("include_footer", False), key="include_footer")
-        include_icon = st.checkbox("包含图标", value=st.session_state.get("include_icon", False), key="include_icon")
-
-        _save_config({
-            "template_name": st.session_state.get("_template_file", {}).get("name", ""),
-            "selected_master": selected_master_index,
-            "include_header": include_header,
-            "include_footer": include_footer,
-            "include_icon": include_icon,
-        })
-
-    if uploaded_file is not None:
-        st.markdown('<div class="section-title"><h3>文件信息</h3></div>', unsafe_allow_html=True)
-        file_details = {
-            "待转换文件": uploaded_file.name,
-            "大小": f"{uploaded_file.size / 1024:.1f} KB",
-            "类型": uploaded_file.type
-        }
-        template_info = st.session_state.get("_template_file")
-        if template_info:
-            file_details["标准模板"] = template_info["name"]
-        st.write(file_details)
-
-    template_info = st.session_state.get("_template_file")
-    convert_button = st.button("⚡ 开始转换", disabled=uploaded_file is None or template_info is None, type="primary")
-
+        can_convert = uploaded_file is not None and template_info is not None
+        convert_button = st.button(
+            "开始转换",
+            disabled=not can_convert,
+            type="primary",
+            use_container_width=True,
+            key="convert_btn",
+        )
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # ---------- 转换过程 ----------
     if convert_button and uploaded_file and template_info:
         with st.spinner("正在转换中，请稍候..."):
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -510,11 +538,11 @@ with tab1:
                     include_icon=include_icon
                 )
 
-                st.markdown('<div class="step-indicator"><div class="step-number">0</div><div class="step-text">源文件检查...</div></div>', unsafe_allow_html=True)
                 validator = Validator()
                 source_report = validator.validate_source(input_path)
                 source_fail = [i for i in source_report.issues if i.level == "fail"]
                 source_warn = [i for i in source_report.issues if i.level == "warning"]
+                
                 if source_fail:
                     st.error("❌ 源文件检查失败")
                     for issue in source_fail:
@@ -522,21 +550,15 @@ with tab1:
                 else:
                     if source_warn:
                         st.warning(f"⚠️ 源文件检查发现 {len(source_warn)} 项警告，将继续转换")
-                        for issue in source_warn[:5]:
-                            st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
+                    
                     try:
-                        st.markdown('<div class="step-indicator"><div class="step-number">1</div><div class="step-text">检测并去除水印...</div></div>', unsafe_allow_html=True)
                         extractor = PptxExtractor()
                         content_models = extractor.extract(input_path)
 
-                        st.markdown('<div class="step-indicator"><div class="step-number">2</div><div class="step-text">加载模板...</div></div>', unsafe_allow_html=True)
                         registry = TemplateRegistry()
-
-                        st.markdown('<div class="step-indicator"><div class="step-number">3</div><div class="step-text">重放内容到新模板...</div></div>', unsafe_allow_html=True)
                         replayer = ContentReplayer(registry, template_path=template_path)
                         temp_output = replayer.replay(content_models, config)
 
-                        st.markdown('<div class="step-indicator"><div class="step-number">4</div><div class="step-text">质量校验...</div></div>', unsafe_allow_html=True)
                         report = validator.validate(temp_output)
 
                         fail_issues = [i for i in report.issues if i.level == "fail"]
@@ -548,147 +570,191 @@ with tab1:
 
                             if warn_issues:
                                 st.warning(f"⚠️ 发现 {len(warn_issues)} 项警告，建议检查")
-                                for issue in warn_issues[:5]:
-                                    st.write(f"  - [{issue.level}] {issue.rule_id}: {issue.message}")
 
                             with open(output_path, "rb") as f:
                                 st.download_button(
                                     label="📥 下载转换后的 PPT",
                                     data=f,
                                     file_name=output_filename,
-                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                    use_container_width=True,
+                                    type="primary",
                                 )
                         else:
                             st.error("❌ 校验失败，未生成输出文件")
-                            st.markdown("### 失败详情")
-                            for issue in report.issues:
-                                st.write(f"**[{issue.level}] {issue.rule_id}**: {issue.message}")
                             if os.path.exists(output_path):
                                 os.remove(output_path)
 
                     except Exception as e:
                         st.error(f"❌ 转换出错: {str(e)}")
                         import traceback
-                        st.code(traceback.format_exc())
+                        with st.expander("查看详细错误"):
+                            st.code(traceback.format_exc())
                         if os.path.exists(output_path):
                             os.remove(output_path)
 
-# ============ Tab 2: 模板分析 ============
-with tab2:
-    st.markdown('<div class="section-title"><h3>分析公司标准模板</h3></div>', unsafe_allow_html=True)
-    st.markdown("使用页面上方上传的公司标准模板，自动识别其中的 master 和 layout 结构。")
 
+# ============================================
+#   页面 2: 历史记录
+# ============================================
+elif current_page == "history":
+    st.markdown('<h1 class="page-title">历史记录</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="page-subtitle">查看和管理您的转换历史</p>', unsafe_allow_html=True)
+    
+    st.markdown("""
+    <div class="config-card">
+        <div style="text-align: center; padding: 40px 20px;">
+            <div style="font-size: 48px; margin-bottom: 16px; opacity: 0.4;">📋</div>
+            <div style="font-size: 16px; color: #4A5568; font-weight: 500; margin-bottom: 8px;">暂无转换记录</div>
+            <div style="font-size: 13px; color: #718096;">完成第一次转换后，记录将显示在这里</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if st.button("去转换 PPT", type="primary", key="go_convert"):
+        st.session_state["current_page"] = "convert"
+        st.rerun()
+
+
+# ============================================
+#   页面 3: 模板管理
+# ============================================
+elif current_page == "templates":
+    st.markdown('<h1 class="page-title">模板管理</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="page-subtitle">上传和管理公司标准模板</p>', unsafe_allow_html=True)
+    
     template_info = st.session_state.get("_template_file")
-    if template_info is None:
-        st.warning("⚠️ 请先在页面上方上传公司标准模板")
-    else:
-        st.markdown(f"📎 **当前分析模板**: {template_info['name']}")
-
+    
+    if template_info:
+        st.markdown(f'<div class="config-card">', unsafe_allow_html=True)
+        st.markdown('<div class="config-card-title">当前模板</div>', unsafe_allow_html=True)
+        
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; gap: 16px; padding: 12px 0;">
+            <div style="width: 48px; height: 48px; border-radius: 8px; background: #E8F8EC; display: flex; align-items: center; justify-content: center; font-size: 20px;">📄</div>
+            <div style="flex: 1;">
+                <div style="font-size: 15px; font-weight: 600; color: #1A1A1A;">{template_info['name']}</div>
+                <div style="font-size: 13px; color: #718096;">{template_info['size'] / 1024:.1f} KB</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
         result = st.session_state.get("_template_analysis")
+        if result:
+            st.markdown(f"""
+            <div style="display: flex; gap: 24px; padding-top: 12px; border-top: 1px solid #EDF2F7; margin-top: 12px;">
+                <div>
+                    <div style="font-size: 12px; color: #718096; margin-bottom: 4px;">Master 数量</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #3DCD58;">{len(result['masters'])}</div>
+                </div>
+                <div>
+                    <div style="font-size: 12px; color: #718096; margin-bottom: 4px;">Layout 总数</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #1A1A1A;">{result['total_layouts']}</div>
+                </div>
+                <div>
+                    <div style="font-size: 12px; color: #718096; margin-bottom: 4px;">Slide 数量</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #1A1A1A;">{result['total_slides']}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        if st.button("更换模板", key="change_template"):
+            _clear_last_template()
+            st.rerun()
+    else:
+        st.markdown("""
+        <div class="config-card">
+            <div style="text-align: center; padding: 40px 20px;">
+                <div style="font-size: 48px; margin-bottom: 16px; opacity: 0.4;">📁</div>
+                <div style="font-size: 16px; color: #4A5568; font-weight: 500; margin-bottom: 8px;">尚未上传模板</div>
+                <div style="font-size: 13px; color: #718096;">上传公司标准模板后可在此处管理</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        new_template = st.file_uploader(
+            "上传公司标准模板",
+            type=["pptx"],
+            key="template_upload_page",
+        )
+        
+        if new_template is not None:
+            is_valid, ratio_str, err_msg = _check_template_aspect_ratio(new_template)
+            if not is_valid:
+                st.error(err_msg)
+            else:
+                st.success(f"✅ 模板上传成功（{ratio_str}）")
+                _save_template(new_template)
+                _analyze_template_file(new_template)
+                st.rerun()
 
-        if result is not None:
-            st.success(f"✅ 分析完成！")
-            st.write(f"- **模板文件**: {template_info['name']}")
-            st.write(f"- **Master 数量**: {len(result['masters'])}")
-            st.write(f"- **Layout 总数**: {result['total_layouts']}")
-            st.write(f"- **现有 Slide 数**: {result['total_slides']}")
 
-            if result.get("theme_colors"):
-                st.markdown("### 🎨 主题颜色（从模板提取）")
-                color_data = []
-                for name, hex_color in result["theme_colors"].items():
-                    color_data.append({
-                        "颜色名称": name,
-                        "HEX 值": f"#{hex_color}",
-                    })
-                st.table(color_data)
-
-            st.markdown("### 📋 Master 列表")
-            master_data = []
-            for m in result["masters"]:
-                bg = m["background"]
-                bg_str = bg["type"]
-                if bg.get("color"):
-                    bg_str += f" (#{bg['color']})"
-                elif bg.get("gradient"):
-                    bg_str += f" ({' → '.join(bg['gradient'])})"
-                if bg.get("theme_color"):
-                    bg_str += f" [主题: {bg['theme_color']}]"
-                master_data.append({
-                    "Master 序号": m["index"],
-                    "Master 名称": m["name"],
-                    "风格": m.get("style_name", "未知"),
-                    "背景": bg_str,
-                    "描述": m.get("style_desc", ""),
-                    "Layout 数量": len(m["layouts"]),
-                })
-            st.table(master_data)
-
-            st.markdown("### 📝 Layout 详细信息")
-            for master in result["masters"]:
-                with st.expander(
-                    f"Master #{master['index']}: {master['name']}（{len(master['layouts'])} 个 layout）"
-                ):
-                    layout_data = []
-                    for layout in master["layouts"]:
-                        layout_data.append({
-                            "索引": layout["index"],
-                            "名称": layout["name"],
-                            "推测类型": layout["type_guess"],
-                            "占位符数": len(layout["placeholders"]),
-                        })
-                    st.table(layout_data)
-        else:
-            st.error("❌ 模板分析失败，请检查模板文件是否有效")
-
-st.markdown("---")
-st.markdown('<div class="section-title"><h3>关于应用</h3></div>', unsafe_allow_html=True)
-
-col_about_1, col_about_2, col_about_3 = st.columns(3)
-
-with col_about_1:
+# ============================================
+#   页面 4: 使用说明
+# ============================================
+elif current_page == "help":
+    st.markdown('<h1 class="page-title">使用说明</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="page-subtitle">了解如何使用 PPT 标准模板转换工具</p>', unsafe_allow_html=True)
+    
     st.markdown("""
-    <div class="schneider-card" style="padding: 20px;">
-        <div style="font-size: 18px; font-weight: 700; color: #3DCD58; margin-bottom: 8px;">⚙️ 技术适配</div>
-        <div style="font-size: 13px; color: #666; line-height: 1.6;">
-            基于原PPT创建输出，保留原幻灯片和版式结构，通过技术适配调整样式，不直接套用模板。
+    <div class="step-list">
+        <div class="step-item">
+            <div class="step-number">1</div>
+            <div class="step-content">
+                <div class="step-title">上传待转换 PPT</div>
+                <div class="step-desc">在「模板转换」页面上传需要转换格式的 PPT 文件（.pptx 格式）</div>
+            </div>
+        </div>
+        <div class="step-item">
+            <div class="step-number">2</div>
+            <div class="step-content">
+                <div class="step-title">选择目标模板</div>
+                <div class="step-desc">上传公司标准模板 PPT，选择需要应用的模板风格（Master）</div>
+            </div>
+        </div>
+        <div class="step-item">
+            <div class="step-number">3</div>
+            <div class="step-content">
+                <div class="step-title">配置转换选项</div>
+                <div class="step-desc">根据需要设置保留原始图片、应用页眉页脚、统一字体样式等选项</div>
+            </div>
+        </div>
+        <div class="step-item">
+            <div class="step-number">4</div>
+            <div class="step-content">
+                <div class="step-title">开始转换</div>
+                <div class="step-desc">点击「开始转换」按钮，等待转换完成后下载结果</div>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-with col_about_2:
+    
+    st.markdown('<div class="config-card" style="margin-top: 24px;">', unsafe_allow_html=True)
+    st.markdown('<div class="config-card-title">关于技术适配模式</div>', unsafe_allow_html=True)
+    
     st.markdown("""
-    <div class="schneider-card" style="padding: 20px;">
-        <div style="font-size: 18px; font-weight: 700; color: #3DCD58; margin-bottom: 8px;">🎨 品牌一致</div>
-        <div style="font-size: 13px; color: #666; line-height: 1.6;">
-            自动提取模板的字体、颜色、页脚等品牌元素，确保输出PPT符合施耐德品牌规范。
-        </div>
+    <div style="font-size: 14px; color: #4A5568; line-height: 1.8;">
+        <p style="margin: 0 0 12px 0;">本工具采用<strong>技术适配模式</strong>，而非传统的模板套用模式：</p>
+        <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;"><strong>保留原结构</strong>：保留原 PPT 的幻灯片和版式结构，不强制套用模板</li>
+            <li style="margin-bottom: 8px;"><strong>样式提取</strong>：自动提取目标模板的字体、颜色、页脚等品牌元素</li>
+            <li style="margin-bottom: 8px;"><strong>智能转换</strong>：占位符元素按模板规范转换，非占位符元素保留原内容</li>
+            <li><strong>质量校验</strong>：多维度质量校验确保转换结果符合规范</li>
+        </ul>
     </div>
     """, unsafe_allow_html=True)
-
-with col_about_3:
-    st.markdown("""
-    <div class="schneider-card" style="padding: 20px;">
-        <div style="font-size: 18px; font-weight: 700; color: #3DCD58; margin-bottom: 8px;">✅ 质量校验</div>
-        <div style="font-size: 13px; color: #666; line-height: 1.6;">
-            多维度质量校验包括水印检测、字体白名单、布局有效性等，确保产物质量。
-        </div>
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    version_text = f"版本: <code>{APP_VERSION}</code>"
+    if APP_VERSION_DATE:
+        version_text += f" &nbsp;|&nbsp; 更新日期: {APP_VERSION_DATE}"
+    
+    st.markdown(f"""
+    <div style="margin-top: 24px; padding: 16px 20px; background: #F7FAFC; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+        <div style="font-size: 12px; color: #718096;">{version_text}</div>
+        <div style="font-size: 12px; color: #A0AEC0;">Schneider Electric · PPT 标准模板转换工具</div>
     </div>
     """, unsafe_allow_html=True)
-
-version_text = f"版本: <code>{APP_VERSION}</code>"
-if APP_VERSION_DATE:
-    version_text += f" &nbsp;|&nbsp; 更新: {APP_VERSION_DATE}"
-
-st.markdown(f"""
-<div class="schneider-footer">
-    <div class="schneider-footer-left">
-        {version_text}
-    </div>
-    <div class="schneider-footer-right">
-        <span class="schneider-footer-brand">Schneider Electric</span>
-        <span>·</span>
-        <span>PPT 标准模板转换工具</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
