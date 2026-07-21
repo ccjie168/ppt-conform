@@ -111,6 +111,51 @@ def _save_config(config_data):
         json.dump(config_data, f, ensure_ascii=False, indent=2)
 
 
+def _load_history():
+    """加载转换历史记录"""
+    try:
+        history_file = os.path.join(PERSIST_DIR, "history.json")
+        if os.path.exists(history_file):
+            with open(history_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def _save_history(history):
+    """保存转换历史记录"""
+    _ensure_persist_dir()
+    try:
+        history_file = os.path.join(PERSIST_DIR, "history.json")
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _add_conversion_record(input_name, output_name, template_name, master_index, master_name, slide_count, config):
+    """添加一条转换记录"""
+    from datetime import datetime
+    history = _load_history()
+    record = {
+        "id": datetime.now().strftime("%Y%m%d%H%M%S"),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "input_name": input_name,
+        "output_name": output_name,
+        "template_name": template_name,
+        "master_index": master_index,
+        "master_name": master_name,
+        "slide_count": slide_count,
+        "config": config,
+    }
+    history.insert(0, record)
+    # 最多保留50条记录
+    history = history[:50]
+    _save_history(history)
+    return record
+
+
 def _load_last_config():
     try:
         with open(LAST_CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -607,14 +652,35 @@ if current_page == "convert":
                                 st.warning(f"⚠️ 发现 {len(warn_issues)} 项警告，建议检查")
 
                             with open(output_path, "rb") as f:
+                                output_bytes = f.read()
                                 st.download_button(
                                     label="📥 下载转换后的 PPT",
-                                    data=f,
+                                    data=output_bytes,
                                     file_name=output_filename,
                                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                                     use_container_width=True,
                                     type="primary",
                                 )
+
+                            # 保存历史记录
+                            template_name = template_info.get("name", "未知模板") if template_info else "未知模板"
+                            master_name = "未知风格"
+                            if template_analysis and selected_master_index < len(template_analysis.get("masters", [])):
+                                master_name = template_analysis["masters"][selected_master_index].get("style_name", "未知风格")
+
+                            _add_conversion_record(
+                                input_name=uploaded_file.name,
+                                output_name=output_filename,
+                                template_name=template_name,
+                                master_index=selected_master_index,
+                                master_name=master_name,
+                                slide_count=len(content_models),
+                                config={
+                                    "include_header": include_header,
+                                    "include_footer": include_footer,
+                                    "include_icon": include_icon,
+                                },
+                            )
                         else:
                             st.error("❌ 校验失败，未生成输出文件")
                             if os.path.exists(output_path):
@@ -635,20 +701,88 @@ if current_page == "convert":
 elif current_page == "history":
     st.markdown('<h1 class="page-title">历史记录</h1>', unsafe_allow_html=True)
     st.markdown('<p class="page-subtitle">查看和管理您的转换历史</p>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    <div class="config-card">
-        <div style="text-align: center; padding: 40px 20px;">
-            <div style="font-size: 48px; margin-bottom: 16px; opacity: 0.4;">📋</div>
-            <div style="font-size: 16px; color: #4A5568; font-weight: 500; margin-bottom: 8px;">暂无转换记录</div>
-            <div style="font-size: 13px; color: #718096;">完成第一次转换后，记录将显示在这里</div>
+
+    history = _load_history()
+
+    if not history:
+        st.markdown("""
+        <div class="config-card">
+            <div style="text-align: center; padding: 40px 20px;">
+                <div style="font-size: 48px; margin-bottom: 16px; opacity: 0.4;">📋</div>
+                <div style="font-size: 16px; color: #4A5568; font-weight: 500; margin-bottom: 8px;">暂无转换记录</div>
+                <div style="font-size: 13px; color: #718096;">完成第一次转换后，记录将显示在这里</div>
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if st.button("去转换 PPT", type="primary", key="go_convert"):
-        st.session_state["current_page"] = "convert"
-        st.rerun()
+        """, unsafe_allow_html=True)
+
+        if st.button("去转换 PPT", type="primary", key="go_convert"):
+            st.session_state["current_page"] = "convert"
+            st.rerun()
+    else:
+        # 统计信息
+        total_count = len(history)
+        st.markdown(f"""
+        <div class="config-card" style="margin-bottom: 20px;">
+            <div style="display: flex; gap: 24px; align-items: center;">
+                <div>
+                    <div style="font-size: 12px; color: #718096; margin-bottom: 4px;">总转换次数</div>
+                    <div style="font-size: 24px; font-weight: 700; color: #3DCD58;">{total_count}</div>
+                </div>
+                <div>
+                    <div style="font-size: 12px; color: #718096; margin-bottom: 4px;">最近转换</div>
+                    <div style="font-size: 14px; font-weight: 500; color: #1A1A1A;">{history[0]['timestamp']}</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 清空历史按钮
+        col1, col2 = st.columns([6, 1])
+        with col2:
+            if st.button("清空记录", type="secondary", key="clear_history"):
+                _save_history([])
+                st.rerun()
+
+        # 历史记录列表
+        for idx, record in enumerate(history):
+            with st.container():
+                st.markdown(f"""
+                <div class="config-card" style="margin-bottom: 12px; padding: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
+                        <div style="flex: 1; min-width: 0;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                <span style="font-size: 20px;">📄</span>
+                                <span style="font-size: 15px; font-weight: 600; color: #1A1A1A; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{record['input_name']}</span>
+                            </div>
+                            <div style="display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: #718096;">
+                                <span>⏰ {record['timestamp']}</span>
+                                <span>🎨 {record['master_name']}</span>
+                                <span>📊 {record['slide_count']} 页</span>
+                                <span>📁 {record['template_name']}</span>
+                            </div>
+                            <div style="margin-top: 8px; font-size: 12px; color: #A0AEC0;">
+                                输出文件: {record['output_name']}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # 操作按钮
+                btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 4])
+                with btn_col1:
+                    if st.button("重新转换", key=f"reconvert_{record['id']}"):
+                        st.session_state["current_page"] = "convert"
+                        st.session_state["selected_master"] = record["master_index"]
+                        st.session_state["include_header"] = record["config"].get("include_header", False)
+                        st.session_state["include_footer"] = record["config"].get("include_footer", False)
+                        st.session_state["include_icon"] = record["config"].get("include_icon", False)
+                        st.rerun()
+                with btn_col2:
+                    if st.button("删除", key=f"delete_{record['id']}"):
+                        history.pop(idx)
+                        _save_history(history)
+                        st.rerun()
 
 
 # ============================================
