@@ -69,6 +69,24 @@ class ContentReplayer:
                 'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
             }
 
+            # 获取母版关联的主题文件路径
+            import zipfile
+            self.template_theme_path = None
+            try:
+                master_idx = master_index + 1
+                master_rels_path = f'ppt/slideMasters/_rels/slideMaster{master_idx}.xml.rels'
+                with zipfile.ZipFile(template_path, 'r') as zf:
+                    if master_rels_path in zf.namelist():
+                        master_rels_xml = zf.read(master_rels_path)
+                        rels_elem = etree.fromstring(master_rels_xml)
+                        ns_rels = 'http://schemas.openxmlformats.org/package/2006/relationships'
+                        for rel in rels_elem.findall(f'.//{{{ns_rels}}}Relationship'):
+                            if 'theme' in rel.get('Type', ''):
+                                self.template_theme_path = rel.get('Target', '')
+                                break
+            except Exception:
+                pass
+
             # 分析Master背景色
             bg = master._element.find('.//p:bg', nsmap)
             if bg is not None:
@@ -97,6 +115,10 @@ class ContentReplayer:
                     if stop_colors:
                         self.background_color = stop_colors[0]
                         self.background_theme_color = stop_colors[0] if any(c in ['bg1', 'bg2', 'dk1', 'dk2', 'lt1', 'lt2'] for c in stop_colors) else None
+            
+            # 如果只有主题颜色，从主题文件中提取实际RGB值
+            if self.background_theme_color and not self.background_color:
+                self.background_color = self._get_color_from_theme(self.background_theme_color)
 
             for shape in master.shapes:
                 try:
@@ -3624,17 +3646,104 @@ class ContentReplayer:
     def _apply_background_to_slide(self, slide):
         """应用背景色或渐变 - 技术适配模式
 
-        技术适配原则：删除幻灯片的背景定义，让它继承母版背景
-        母版背景已经在母版复制时正确设置
+        技术适配原则：直接在幻灯片上应用背景颜色，确保正确显示
         
-        使用 slide.follow_master_background = True 来恢复母版背景继承
-        这是python-pptx提供的标准方法，比手动操作XML更可靠
+        问题：幻灯片使用的是原PPT的母版，而不是新复制的模板母版
+        解决方案：直接设置幻灯片背景颜色，而不是依赖母版继承
         """
         try:
-            # 设置为True会删除任何自定义背景并恢复母版继承
-            slide.follow_master_background = True
+            bg = slide.background
+            fill = bg.fill
+            
+            if self.background_color:
+                if self.background_color.lower() == 'gradient':
+                    pass
+                else:
+                    fill.solid()
+                    try:
+                        r, g, b = int(self.background_color[0:2], 16), int(self.background_color[2:4], 16), int(self.background_color[4:6], 16)
+                        fill.fore_color.rgb = RGBColor(r, g, b)
+                    except Exception:
+                        try:
+                            fill.fore_color.theme_color = getattr(MSO_THEME_COLOR_INDEX, 'BACKGROUND_1', 0)
+                        except Exception:
+                            pass
         except Exception:
             pass
+
+    def _get_color_from_theme(self, theme_color_name: str) -> str:
+        """从主题文件中提取实际的RGB颜色值
+        
+        Args:
+            theme_color_name: 主题颜色名称，如 'bg1', 'bg2', 'dk1', 'accent1' 等
+        
+        Returns:
+            RGB颜色值，如 '0A2F24'，如果未找到则返回空字符串
+        """
+        if not self.template_path:
+            return ""
+        
+        try:
+            import zipfile
+            from lxml import etree
+            
+            ns_a = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+            
+            with zipfile.ZipFile(self.template_path, 'r') as zf:
+                # 确定主题文件路径
+                theme_file = None
+                
+                # 如果有母版关联的主题文件路径，使用它
+                if self.template_theme_path:
+                    # 处理相对路径，如 '../theme/theme3.xml' -> 'ppt/theme/theme3.xml'
+                    if self.template_theme_path.startswith('../'):
+                        theme_file = f'ppt/{self.template_theme_path[3:]}'
+                    else:
+                        theme_file = f'ppt/{self.template_theme_path}'
+                
+                # 如果没有，查找第一个主题文件
+                if not theme_file or theme_file not in zf.namelist():
+                    theme_files = [f for f in zf.namelist() if f.startswith('ppt/theme/theme') and f.endswith('.xml')]
+                    if theme_files:
+                        theme_file = theme_files[0]
+                
+                if not theme_file or theme_file not in zf.namelist():
+                    return ""
+                
+                # 读取主题文件
+                theme_xml = zf.read(theme_file)
+                theme_elem = etree.fromstring(theme_xml)
+                
+                # 查找颜色方案
+                clrScheme = theme_elem.find(f'.//{{{ns_a}}}clrScheme', namespaces={'a': ns_a})
+                if clrScheme is None:
+                    return ""
+                
+                # 查找对应的颜色定义
+                color_map = {
+                    'bg1': 'dk1',
+                    'bg2': 'lt1',
+                    'dk1': 'dk1',
+                    'dk2': 'dk2',
+                    'lt1': 'lt1',
+                    'lt2': 'lt2',
+                }
+                
+                target_name = color_map.get(theme_color_name.lower(), theme_color_name.lower())
+                
+                color_elem = clrScheme.find(f'.//{{{ns_a}}}{target_name}', namespaces={'a': ns_a})
+                if color_elem is not None:
+                    # 先查找直接子元素
+                    srgbClr = color_elem.find(f'{{{ns_a}}}srgbClr', namespaces={'a': ns_a})
+                    if srgbClr is None:
+                        # 如果没有找到，查找后代元素
+                        srgbClr = color_elem.find(f'.//{{{ns_a}}}srgbClr', namespaces={'a': ns_a})
+                    if srgbClr is not None:
+                        return srgbClr.get('val', '')
+            
+            return ""
+        except Exception:
+            return ""
 
     def _unify_fonts_and_colors_on_slide(self, slide):
         """统一字体和颜色"""
