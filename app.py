@@ -321,58 +321,67 @@ if current_page == "convert":
     st.markdown('<p class="page-subtitle">上传 PPT 文件，智能转换为标准企业模板格式</p>', unsafe_allow_html=True)
     
     # ---------- 上传区域 ----------
-    st.markdown('<div class="first-uploader" id="first-uploader-wrapper">', unsafe_allow_html=True)
+    # 自定义上传卡片（始终显示）
+    st.markdown("""
+    <div class="upload-card-wrapper" id="upload-card-container">
+        <div class="upload-card" id="custom-upload-card">
+            <div class="upload-card-icon">📁</div>
+            <div class="upload-card-title">点击或拖拽上传 PPT 文件</div>
+            <div class="upload-card-desc">支持 .pptx 格式</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 文件上传器（隐藏在卡片下方）
     uploaded_file = st.file_uploader(
         " ",
         type=["pptx"],
         key="input_ppt",
         label_visibility="collapsed",
     )
-    st.markdown('</div>', unsafe_allow_html=True)
     
-    # 自定义上传卡片
-    if uploaded_file is None:
+    # 已上传状态：更新卡片内容
+    if uploaded_file is not None:
         st.markdown("""
-        <div class="upload-card" id="custom-upload-card">
-            <div class="upload-card-icon">📁</div>
-            <div class="upload-card-title">点击或拖拽上传 PPT 文件</div>
-            <div class="upload-card-desc">支持 .pptx 格式</div>
-        </div>
         <script>
         (function() {
             var card = document.getElementById('custom-upload-card');
             if (card) {
-                card.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    var wrapper = document.getElementById('first-uploader-wrapper');
-                    if (wrapper) {
-                        var inputs = wrapper.querySelectorAll('input[type="file"]');
-                        if (inputs.length > 0) {
-                            inputs[0].click();
-                        } else {
-                            var allInputs = document.querySelectorAll('input[type="file"]');
-                            for (var i = 0; i < allInputs.length; i++) {
-                                var parent = allInputs[i].closest('[data-testid="stFileUploader"]');
-                                if (parent && parent.closest('#first-uploader-wrapper')) {
-                                    allInputs[i].click();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                });
+                card.classList.add('uploaded');
+                card.innerHTML = '<div class="upload-card-icon">✅</div>' +
+                    '<div class="upload-card-title">""" + uploaded_file.name + """</div>' +
+                    '<div class="upload-card-desc">""" + str(round(uploaded_file.size / 1024, 1)) + """ KB · 已上传</div>';
             }
         })();
         </script>
         """, unsafe_allow_html=True)
-    else:
-        st.markdown(f"""
-        <div class="upload-card uploaded">
-            <div class="upload-card-icon">✅</div>
-            <div class="upload-card-title">{uploaded_file.name}</div>
-            <div class="upload-card-desc">{uploaded_file.size / 1024:.1f} KB · 已上传</div>
-        </div>
-        """, unsafe_allow_html=True)
+    
+    # JavaScript绑定事件（拖拽视觉反馈）
+    st.markdown("""
+    <script>
+    (function() {
+        var card = document.getElementById('custom-upload-card');
+        
+        if (card) {
+            ['dragenter', 'dragover'].forEach(function(eventName) {
+                card.addEventListener(eventName, function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    card.classList.add('dragging');
+                }, false);
+            });
+            
+            ['dragleave', 'drop'].forEach(function(eventName) {
+                card.addEventListener(eventName, function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    card.classList.remove('dragging');
+                }, false);
+            });
+        }
+    })();
+    </script>
+    """, unsafe_allow_html=True)
     
     # ---------- 转换配置卡片 ----------
     st.markdown('<div class="config-card animate-fade-in">', unsafe_allow_html=True)
