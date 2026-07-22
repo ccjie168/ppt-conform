@@ -421,6 +421,7 @@ class ContentReplayer:
         """从目标模板只复制选中的母版和版式到输出PPT，保留原母版
 
         使用zipfile完整复制母版相关的所有文件，确保PPT结构完整不损坏。
+        同时修改输出PPT尺寸为模板尺寸，并将所有幻灯片指向新母版的版式。
         返回新的Presentation对象。
         """
         if not self.template_path or not Path(self.template_path).exists():
@@ -437,6 +438,8 @@ class ContentReplayer:
 
             template_master = template_prs.slide_masters[selected_master_index]
             template_master_idx = selected_master_index + 1
+            template_width = template_prs.slide_width
+            template_height = template_prs.slide_height
 
             temp_path = '/tmp/tmp_output_master_src.pptx'
             output_prs.save(temp_path)
@@ -448,6 +451,7 @@ class ContentReplayer:
             ns_rels = 'http://schemas.openxmlformats.org/package/2006/relationships'
             ns_p = 'http://schemas.openxmlformats.org/presentationml/2006/main'
             ns_r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+            ns_a = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 
             with zipfile.ZipFile(self.template_path, 'r') as tpl_zip, \
                  zipfile.ZipFile(temp_path, 'r') as src_zip, \
@@ -509,6 +513,8 @@ class ContentReplayer:
                                 old_theme_num = target.split('theme')[-1].split('.')[0]
                                 if old_theme_num in theme_mapping:
                                     rel.set('Target', f'../theme/theme{theme_mapping[old_theme_num]}.xml')
+                            elif 'slideMaster' in target:
+                                rel.set('Target', f'../slideMasters/slideMaster{new_master_idx}.xml')
                         files_to_copy[new_layout_rels_path] = etree.tostring(layout_rels_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
 
                 for old_theme_num, new_theme_num in theme_mapping.items():
@@ -531,6 +537,9 @@ class ContentReplayer:
                             rel.set('Target', f'../theme/theme{theme_mapping[old_num]}.xml')
 
                 files_to_copy[new_master_rels_filename] = etree.tostring(master_rels_new, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+                # 新母版的第一个版式索引，用于后续幻灯片指向
+                first_new_layout_num = min(layout_mapping.values()) if layout_mapping else (existing_layouts + 1)
 
                 for item in src_zip.infolist():
                     data = src_zip.read(item.filename)
@@ -569,6 +578,13 @@ class ContentReplayer:
                         )
                         new_master_id.set(f'{{{ns_r}}}id', f'rIdMaster{new_master_idx}')
 
+                        # 修改页面尺寸为模板尺寸
+                        sldSz = pres_elem.find(f'.//{{{ns_p}}}sldSz')
+                        if sldSz is not None:
+                            sldSz.set('cx', str(template_width))
+                            sldSz.set('cy', str(template_height))
+                            sldSz.set('type', 'screen16x9')
+
                         data = etree.tostring(pres_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
 
                     elif item.filename == 'ppt/_rels/presentation.xml.rels':
@@ -580,6 +596,17 @@ class ContentReplayer:
                         new_rel.set('Target', f'slideMasters/slideMaster{new_master_idx}.xml')
 
                         data = etree.tostring(pres_rels_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+                    elif item.filename.startswith('ppt/slides/_rels/slide') and item.filename.endswith('.xml.rels'):
+                        # 将所有幻灯片的版式引用指向新母版的第一个版式
+                        slide_rels_elem = etree.fromstring(data)
+                        modified = False
+                        for rel in slide_rels_elem.findall(f'{{{ns_rels}}}Relationship'):
+                            if 'slideLayout' in rel.get('Type', ''):
+                                rel.set('Target', f'../slideLayouts/slideLayout{first_new_layout_num}.xml')
+                                modified = True
+                        if modified:
+                            data = etree.tostring(slide_rels_elem, xml_declaration=True, encoding='UTF-8', standalone=True)
 
                     dst_zip.writestr(item.filename, data)
 
@@ -644,12 +671,16 @@ class ContentReplayer:
             self.default_text_color = extractor.get_text_color_for_master(
                 self.template_path, selected_master_index
             )
-            
+
             master_style = str(selected_master_index).upper()
             self.master_style = master_style
-            
+
+            # 将数字索引映射到 F1-F4 风格ID
+            style_id_map = {"0": "F1", "1": "F2", "2": "F3", "3": "F4"}
+            style_id = style_id_map.get(master_style, master_style)
+
             colors = extractor.extract_theme_colors(self.template_path)
-            
+
             if master_style in ("F1", "F2", "0", "1"):
                 self.title_text_color = colors.get("dk2", "3DCD58")
                 if not self.default_text_color or self._is_light_color(self.default_text_color):
@@ -657,7 +688,7 @@ class ContentReplayer:
             else:
                 self.title_text_color = colors.get("lt1", "FFFFFF")
                 self.default_text_color = "FFFFFF"
-            
+
             if self.default_text_color:
                 if "body" not in self.template_formats:
                     self.template_formats["body"] = {}
@@ -667,21 +698,47 @@ class ContentReplayer:
                 if "title" not in self.template_formats:
                     self.template_formats["title"] = {}
                 self.template_formats["title"]["color"] = self.title_text_color
-            
+
             self.theme_fonts = extractor.extract_theme_fonts(
                 self.template_path, selected_master_index
             )
-            
+
             self._analyze_template_footer(self.template_path, selected_master_index)
-            
+
+            # 根据 registry 配置强制覆盖背景色，确保与 UI 选择的风格一致
+            # （模板母版实际背景可能与风格定义不符，如 F3 深绿色在模板中可能对应白色母版）
+            try:
+                master_config = self.registry.get_master_style(style_id)
+                if master_config:
+                    bg_config = master_config.get("background")
+                    if bg_config and isinstance(bg_config, dict):
+                        # 渐变背景
+                        if bg_config.get("type") == "gradient":
+                            self.background_color = "gradient"
+                            self.background_gradient = {
+                                "start_color": bg_config.get("start_color", "#1A237E").lstrip("#"),
+                                "end_color": bg_config.get("end_color", "#0D47A1").lstrip("#"),
+                                "direction": bg_config.get("direction", "vertical"),
+                            }
+                        else:
+                            self.background_color = bg_config.get("color", self.background_color)
+                            self.background_gradient = None
+                    else:
+                        bg_color = master_config.get("background_color")
+                        if bg_color:
+                            self.background_color = bg_color.lstrip("#")
+                        self.background_gradient = None
+            except Exception:
+                pass
+
             self.placeholder_mapping = extractor.extract_placeholder_mapping(
                 self.template_path, selected_master_index
             )
-            
+
             fonts = extractor.extract_theme_fonts(self.template_path, selected_master_index)
             self.template_title_font = fonts.get("major")
             self.template_body_font = fonts.get("minor")
-            
+
         except Exception:
             pass
 
@@ -3657,7 +3714,28 @@ class ContentReplayer:
             
             if self.background_color:
                 if self.background_color.lower() == 'gradient':
-                    pass
+                    # 应用渐变背景
+                    try:
+                        grad_config = getattr(self, 'background_gradient', None)
+                        if grad_config:
+                            fill.gradient()
+                            stops = fill.gradient_stops
+                            start_color = grad_config.get('start_color', '1A237E')
+                            end_color = grad_config.get('end_color', '0D47A1')
+                            if len(stops) >= 2:
+                                stops[0].color.rgb = RGBColor.from_string(start_color)
+                                stops[1].color.rgb = RGBColor.from_string(end_color)
+                        else:
+                            # 默认渐变
+                            fill.gradient()
+                            stops = fill.gradient_stops
+                            if len(stops) >= 2:
+                                stops[0].color.rgb = RGBColor(0x0A, 0x2F, 0x24)
+                                stops[1].color.rgb = RGBColor(0x3D, 0xCD, 0x58)
+                    except Exception:
+                        # 渐变失败时回退到纯色
+                        fill.solid()
+                        fill.fore_color.rgb = RGBColor(0x0A, 0x2F, 0x24)
                 else:
                     fill.solid()
                     try:
@@ -3785,3 +3863,185 @@ class ContentReplayer:
             run.font.color.rgb = RGBColor.from_string(hex_color.lstrip("#"))
         except:
             pass
+
+    def convert_with_classification(
+        self,
+        source_path: str,
+        output_path: str,
+        background_style: str = "dark_green",
+    ):
+        """
+        Hybrid mode conversion main entry point.
+        Returns (output_path, qa_items).
+        """
+        import shutil
+        import yaml
+        from pathlib import Path
+        from pptx import Presentation
+        from core.classifier.slide_classifier import SlideClassifier
+        from core.migrator.slide_migrator import SlideMigrator
+        from core.models import QAReportItem
+
+        # Load style config
+        config_path = Path(__file__).parent.parent.parent / "config" / "master_styles.yaml"
+        with open(config_path, "r", encoding="utf-8") as f:
+            styles_config = yaml.safe_load(f)
+
+        style_cfg = styles_config.get("master_styles", {}).get(background_style, {})
+        master_idx = style_cfg.get("master_index", 2)
+
+        # 1. Classify all slides
+        source_prs = Presentation(source_path)
+        classifier = SlideClassifier()
+        classifications = classifier.classify_all(source_prs)
+
+        # 2. Create output from template
+        shutil.copy(self.template_path, output_path)
+        target_prs = Presentation(output_path)
+
+        # Remove existing slides from template
+        while len(target_prs.slides._sldIdLst) > 0:
+            rId = target_prs.slides._sldIdLst[0].rId
+            target_prs.part.drop_rel(rId)
+            del target_prs.slides._sldIdLst[0]
+
+        migrator = SlideMigrator(self.template_path, master_idx)
+        qa_items = []
+
+        for idx, cls in enumerate(classifications):
+            source_slide = source_prs.slides[idx]
+
+            if cls.migration_mode == "migration":
+                # Migration path: create new slide from template layout
+                new_slide = migrator.migrate_slide(
+                    source_slide=source_slide,
+                    target_prs=target_prs,
+                    slide_type=cls.slide_type,
+                    layout_index=cls.target_layout_index,
+                )
+                # Apply font normalization
+                replaced_fonts = self._normalize_fonts(new_slide)
+
+                qa_item = QAReportItem(
+                    slide_no=idx + 1,
+                    detected_type=cls.slide_type,
+                    applied_layout=cls.target_layout_name,
+                    migration_mode="migration",
+                    font_replaced=" → ".join(replaced_fonts) if replaced_fonts else "",
+                    objects_moved=0,
+                    objects_deleted=0,
+                    overflow_risk="None",
+                    need_manual_review=False,
+                    comment=f"Migration: {cls.slide_type}",
+                )
+            else:
+                # Adaptation path: create new slide and copy content
+                new_slide = self._adapt_single_slide(
+                    source_slide, target_prs, master_idx, cls
+                )
+                replaced_fonts = self._normalize_fonts(new_slide)
+
+                qa_item = QAReportItem(
+                    slide_no=idx + 1,
+                    detected_type=cls.slide_type,
+                    applied_layout=cls.target_layout_name,
+                    migration_mode="adaptation",
+                    font_replaced=" → ".join(replaced_fonts) if replaced_fonts else "",
+                    objects_moved=0,
+                    objects_deleted=0,
+                    overflow_risk="Low",
+                    need_manual_review=True,
+                    comment=f"Adaptation: {cls.slide_type}，建议人工检查",
+                )
+
+            qa_items.append(qa_item)
+
+        target_prs.save(output_path)
+        return output_path, qa_items
+
+    def _adapt_single_slide(self, source_slide, target_prs, master_idx, classification):
+        """Adaptation path: create new slide from target layout, copy text content."""
+        master = target_prs.slide_masters[min(master_idx, len(target_prs.slide_masters) - 1)]
+        layout_idx = min(classification.target_layout_index, len(master.slide_layouts) - 1)
+        target_layout = master.slide_layouts[layout_idx]
+        new_slide = target_prs.slides.add_slide(target_layout)
+
+        # Copy text content (simplified: title + body text)
+        title_text = ""
+        body_texts = []
+        title_shape = source_slide.shapes.title if source_slide.shapes.title else None
+
+        for shape in source_slide.shapes:
+            if title_shape and shape == title_shape:
+                title_text = shape.text_frame.text
+            elif shape.has_text_frame and shape.text_frame.text.strip():
+                body_texts.append(shape.text_frame.text)
+
+        if new_slide.shapes.title and title_text:
+            new_slide.shapes.title.text = title_text
+
+        # Put body text in first body placeholder
+        for ph in new_slide.placeholders:
+            ph_type = ph.placeholder_format.type
+            if ph_type == 2 and ph.has_text_frame:  # BODY
+                ph.text_frame.text = "\n".join(body_texts)
+                break
+
+        return new_slide
+
+    def _normalize_fonts(self, slide) -> set:
+        """
+        Normalize fonts on a slide. Replace old fonts with target fonts.
+        Returns set of replaced font names.
+        """
+        import yaml
+        from pathlib import Path
+
+        replaced = set()
+
+        config_path = Path(__file__).parent.parent.parent / "config" / "font_mapping.yaml"
+        if not config_path.exists():
+            return replaced
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            font_config = yaml.safe_load(f)
+
+        # Build replacement map
+        replace_map = {}
+        for group in ["chinese", "english"]:
+            cfg = font_config.get("font_replacements", {}).get(group, {})
+            target = cfg.get("target_font", "Poppins")
+            for src in cfg.get("source_fonts", []):
+                replace_map[src.lower()] = target
+
+        # Normalize all shapes
+        for shape in slide.shapes:
+            self._normalize_shape_fonts(shape, replace_map, replaced)
+
+        return replaced
+
+    def _normalize_shape_fonts(self, shape, replace_map: dict, replaced: set):
+        """Recursively normalize fonts in a shape."""
+        if not hasattr(shape, 'has_text_frame'):
+            return
+        if shape.has_text_frame:
+            for para in shape.text_frame.paragraphs:
+                for run in para.runs:
+                    if run.font.name:
+                        old_font = run.font.name
+                        new_font = replace_map.get(old_font.lower())
+                        if new_font and old_font != new_font:
+                            run.font.name = new_font
+                            replaced.add(old_font)
+
+        if hasattr(shape, 'has_table') and shape.has_table:
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    for para in cell.text_frame.paragraphs:
+                        for run in para.runs:
+                            if run.font.name:
+                                old_font = run.font.name
+                                new_font = replace_map.get(old_font.lower())
+                                if new_font and old_font != new_font:
+                                    run.font.name = new_font
+                                    replaced.add(old_font)
