@@ -18,32 +18,31 @@ class TestTemplateRegistry:
 
         # 验证加载了4种主样式
         assert len(registry.master_styles) == 4
-        assert "F1" in registry.master_styles
-        assert "F2" in registry.master_styles
-        assert "F3" in registry.master_styles
-        assert "F4" in registry.master_styles
+        assert "white" in registry.master_styles
+        assert "light_green" in registry.master_styles
+        assert "dark_green" in registry.master_styles
+        assert "gradient" in registry.master_styles
 
-        # 验证F1样式属性
-        f1_style = registry.master_styles["F1"]
-        assert f1_style["name"] == "白色简约"
-        assert f1_style["background_color"] == "#FFFFFF"
-        assert f1_style["text_color"] == "#333333"
+        # 验证white样式属性
+        white_style = registry.master_styles["white"]
+        assert white_style["name"] == "White"
+        assert white_style["background_color"] == "#FFFFFF"
+        assert white_style["text_color"] == "#0A2F24"
 
-        # 验证F2样式属性
-        f2_style = registry.master_styles["F2"]
-        assert f2_style["name"] == "浅绿色清新"
-        assert f2_style["background_color"] == "#E8F5E9"
+        # 验证light_green样式属性
+        light_green_style = registry.master_styles["light_green"]
+        assert light_green_style["name"] == "Light Green"
+        assert light_green_style["background_color"] == "#E7FFD9"
 
-        # 验证F3样式属性
-        f3_style = registry.master_styles["F3"]
-        assert f3_style["name"] == "深绿色商务"
-        assert f3_style["background_color"] == "#1B5E20"
+        # 验证dark_green样式属性
+        dark_green_style = registry.master_styles["dark_green"]
+        assert dark_green_style["name"] == "Dark Green"
+        assert dark_green_style["background_color"] == "#0A2F24"
 
-        # 验证F4渐变样式
-        f4_style = registry.master_styles["F4"]
-        assert f4_style["name"] == "渐变科技"
-        assert "background" in f4_style
-        assert f4_style["background"]["type"] == "gradient"
+        # 验证gradient渐变样式
+        gradient_style = registry.master_styles["gradient"]
+        assert gradient_style["name"] == "Gradient"
+        assert gradient_style["background_type"] == "gradient"
 
     def test_get_layout_by_name(self):
         """测试通过名称获取布局"""

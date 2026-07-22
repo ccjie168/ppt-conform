@@ -96,3 +96,67 @@ def test_watermark_blocked():
     finally:
         if output_path.exists():
             output_path.unlink()
+
+
+def test_e2e_convert_dark_green():
+    """端到端测试：深绿色风格混合模式转换"""
+    import tempfile
+    import os
+    from pptx import Presentation
+    from pptx.util import Inches
+    from core.replayer.content_replayer import ContentReplayer
+    from core.registry.template_registry import TemplateRegistry
+    from core.qa.reporter import QAReporter
+
+    TEMPLATE_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "templates", "2026 se template eng.pptx",
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 准备源 PPT — 3 页：封面 + 内容 + 表格
+        source_path = os.path.join(tmpdir, "source.pptx")
+        prs = Presentation()
+        # 封面
+        s1 = prs.slides.add_slide(prs.slide_layouts[0])
+        s1.shapes.title.text = "Test Presentation"
+        # 内容页
+        s2 = prs.slides.add_slide(prs.slide_layouts[1])
+        s2.shapes.title.text = "Content Page"
+        s2.placeholders[1].text = "Some body text here"
+        # 表格页
+        s3 = prs.slides.add_slide(prs.slide_layouts[5])
+        s3.shapes.title.text = "Data Table"
+        s3.shapes.add_table(3, 3, Inches(1), Inches(2), Inches(8), Inches(3))
+        prs.save(source_path)
+
+        output_path = os.path.join(tmpdir, "output.pptx")
+        report_path = os.path.join(tmpdir, "report.xlsx")
+
+        # 执行转换
+        registry = TemplateRegistry()
+        replayer = ContentReplayer(registry, template_path=TEMPLATE_PATH)
+
+        out_path, qa_items = replayer.convert_with_classification(
+            source_path=source_path,
+            output_path=output_path,
+            background_style="dark_green",
+        )
+
+        # 验证输出
+        assert os.path.exists(out_path)
+        assert len(qa_items) == 3
+
+        # 生成 QA 报告
+        reporter = QAReporter()
+        reporter.generate(qa_items, report_path)
+        assert os.path.exists(report_path)
+
+        # 验证输出 PPT 可打开且页数一致
+        out_prs = Presentation(out_path)
+        assert len(out_prs.slides) == 3
+
+        # 验证尺寸与模板一致
+        template_prs = Presentation(TEMPLATE_PATH)
+        assert out_prs.slide_width == template_prs.slide_width
+        assert out_prs.slide_height == template_prs.slide_height
