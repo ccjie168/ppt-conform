@@ -1,47 +1,42 @@
-# Master Styles Configuration
-# 定义4种主样式模板 (F1-F4)
-
 master_styles:
-  F1:
-    name: "白色简约"
+  white:
+    name: "White"
+    display_name: "白色简约"
+    description: "白色背景，适合商务演示"
+    master_index: 0
     background_color: "#FFFFFF"
-    text_color: "#333333"
-    body_text_color: "#555555"
-    title_font: "Arial"
-    body_font: "Arial"
-    accent_color: "#2196F3"
-    description: "简约白色背景，适合商务演示"
-
-  F2:
-    name: "浅绿色清新"
-    background_color: "#E8F5E9"
-    text_color: "#1B5E20"
-    body_text_color: "#2E7D32"
-    title_font: "Arial"
-    body_font: "Arial"
-    accent_color: "#4CAF50"
-    description: "清新浅绿色背景，适合环保、自然主题"
-
-  F3:
-    name: "深绿色商务"
-    background_color: "#1B5E20"
-    text_color: "#FFFFFF"
-    body_text_color: "#E8F5E9"
-    title_font: "Arial"
-    body_font: "Arial"
+    text_color: "#0A2F24"
+    title_font: "Poppins"
+    body_font: "Poppins"
     accent_color: "#3DCD58"
-    description: "深绿色商务风格，适合专业演示"
-
-  F4:
-    name: "渐变科技"
-    background:
-      type: "gradient"
-      start_color: "#1A237E"
-      end_color: "#0D47A1"
-      direction: "vertical"
+  light_green:
+    name: "Light Green"
+    display_name: "浅绿色清新"
+    description: "浅绿色背景，适合环保、自然主题"
+    master_index: 1
+    background_color: "#E7FFD9"
+    text_color: "#0A2F24"
+    title_font: "Poppins"
+    body_font: "Poppins"
+    accent_color: "#3DCD58"
+  dark_green:
+    name: "Dark Green"
+    display_name: "深绿色商务"
+    description: "深绿色背景，适合专业演示"
+    master_index: 2
+    background_color: "#0A2F24"
     text_color: "#FFFFFF"
-    body_text_color: "#BBDEFB"
-    title_font: "Arial"
-    body_font: "Arial"
-    accent_color: "#42A5F5"
-    description: "科技感渐变背景，适合创新、技术主题"
+    title_font: "Poppins"
+    body_font: "Poppins"
+    accent_color: "#3DCD58"
+  gradient:
+    name: "Gradient"
+    display_name: "渐变科技"
+    description: "渐变背景，适合创新、技术主题"
+    master_index: 3
+    background_type: "gradient"
+    background_color: "#0A2F24"
+    text_color: "#FFFFFF"
+    title_font: "Poppins"
+    body_font: "Poppins"
+    accent_color: "#3DCD58"

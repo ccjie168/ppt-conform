@@ -141,3 +141,57 @@ class ValidationReport(BaseModel):
     passed: bool
     issues: list[ValidationIssue]
     summary: str
+
+
+class PreCheckIssue(BaseModel):
+    level: Literal["info", "warning", "error"]
+    rule_id: str
+    message: str
+    slide_index: int | None = None
+
+
+class PreCheckResult(BaseModel):
+    slide_count: int = 0
+    master_count: int = 0
+    fonts_used: list[str] = []
+    has_old_se_template: bool = False
+    has_external_theme: bool = False
+    has_embedded_chart: bool = False
+    has_smartart: bool = False
+    has_media: bool = False
+    has_animation: bool = False
+    is_4_3_ratio: bool = False
+    overflow_objects_count: int = 0
+    issues: list[PreCheckIssue] = []
+
+
+class SlideClassification(BaseModel):
+    slide_index: int
+    slide_type: str
+    migration_mode: Literal["migration", "adaptation"]
+    target_layout_index: int
+    target_layout_name: str = ""
+    confidence: float = 0.0
+
+
+class QAReportItem(BaseModel):
+    slide_no: int
+    detected_type: str
+    applied_layout: str
+    migration_mode: str
+    font_replaced: str = ""
+    objects_moved: int = 0
+    objects_deleted: int = 0
+    overflow_risk: str = "None"
+    need_manual_review: bool = False
+    comment: str = ""
+
+
+class ConversionConfig(BaseModel):
+    input_path: str
+    output_path: str
+    report_path: str = ""
+    background_style: str = "dark_green"
+    include_header: bool = False
+    include_footer: bool = True
+    include_icon: bool = False

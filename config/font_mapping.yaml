@@ -1,0 +1,25 @@
+font_replacements:
+  chinese:
+    source_fonts:
+      - "微软雅黑"
+      - "Microsoft YaHei"
+      - "Microsoft YaHei UI"
+      - "宋体"
+      - "SimSun"
+      - "黑体"
+      - "SimHei"
+      - "楷体"
+      - "KaiTi"
+    target_font: "汉仪旗黑"
+  english:
+    source_fonts:
+      - "Calibri"
+      - "Arial"
+      - "Times New Roman"
+      - "Tahoma"
+      - "Verdana"
+    target_font: "Poppins"
+  heading:
+    target_font: "Poppins"
+  body:
+    target_font: "Poppins"

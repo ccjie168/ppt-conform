@@ -1,0 +1,54 @@
+layout_mappings:
+  Cover:
+    layout_index: 0
+    layout_name: "Title slide simple"
+  Section_Divider:
+    layout_index: 19
+    layout_name: "Section break for longer copy"
+  Executive_Summary:
+    layout_index: 1
+    layout_name: "One column"
+  KPI_Dashboard:
+    layout_index: 9
+    layout_name: "One column with object"
+  Timeline:
+    layout_index: 1
+    layout_name: "One column"
+  Risk_Matrix:
+    layout_index: 1
+    layout_name: "One column"
+  Table_Page:
+    layout_index: 9
+    layout_name: "One column with object"
+  Chart_Page:
+    layout_index: 9
+    layout_name: "One column with object"
+  Image_Page:
+    layout_index: 4
+    layout_name: "Title slide with image"
+  Appendix:
+    layout_index: 1
+    layout_name: "One column"
+  Closing:
+    layout_index: 24
+    layout_name: "Closing slide"
+  Content:
+    layout_index: 1
+    layout_name: "One column"
+
+migration_types:
+  - Cover
+  - Section_Divider
+  - Closing
+  - Image_Page
+
+adaptation_types:
+  - Executive_Summary
+  - KPI_Dashboard
+  - Timeline
+  - Risk_Matrix
+  - Table_Page
+  - Chart_Page
+  - Appendix
+  - Content
+  - Decision_Page
