@@ -9,6 +9,6 @@ __pycache__/
 dist/
 build/
 *.pptx
-!templates/corporate_template.pptx
+!templates/*.pptx
 .github_token
 .persist/
