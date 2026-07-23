@@ -3965,6 +3965,7 @@ class ContentReplayer:
         from core.migrator.position_matcher import PositionMatcher
         from core.migrator.overflow_adjuster import OverflowAdjuster
         from core.migrator.coordinate_mapper import CoordinateMapper
+        from pptx.dml.color import RGBColor
 
         master = target_prs.slide_masters[min(master_idx, len(target_prs.slide_masters) - 1)]
         layout_idx = min(classification.target_layout_index, len(master.slide_layouts) - 1)
@@ -3972,6 +3973,10 @@ class ContentReplayer:
         new_slide = target_prs.slides.add_slide(target_layout)
 
         self._clear_placeholder_defaults(new_slide)
+        
+        self._remove_body_placeholders(new_slide)
+        
+        self._remove_footer_placeholders(new_slide)
 
         bg_dark = master_idx == 2
         text_color = "#FFFFFF" if bg_dark else "#0A2F24"
@@ -3998,7 +4003,34 @@ class ContentReplayer:
             overflow_adjuster=overflow_adjuster,
             coordinate_mapper=coordinate_mapper
         )
-        object_migrator.migrate_objects(source_slide, new_slide, tgt_width, tgt_height)
+        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide, tgt_width, tgt_height)
+
+        title_text = semantic_info.get("title_text", "")
+        subtitle_text = semantic_info.get("subtitle_text", "")
+        
+        if new_slide.shapes.title and title_text:
+            new_slide.shapes.title.text = title_text
+            for para in new_slide.shapes.title.text_frame.paragraphs:
+                for run in para.runs:
+                    run.font.name = "Poppins"
+                    run.font._element.set('eastAsian', 'Poppins')
+                    try:
+                        run.font.color.rgb = RGBColor.from_string("FFFFFF" if bg_dark else "0A2F24")
+                    except Exception:
+                        pass
+        
+        for ph in new_slide.placeholders:
+            ph_type = ph.placeholder_format.type
+            if ph_type == 4 and ph.has_text_frame and subtitle_text:
+                ph.text_frame.text = subtitle_text
+                for para in ph.text_frame.paragraphs:
+                    for run in para.runs:
+                        run.font.name = "Poppins"
+                        run.font._element.set('eastAsian', 'Poppins')
+                        try:
+                            run.font.color.rgb = RGBColor.from_string("E8F5E9" if bg_dark else "718096")
+                        except Exception:
+                            pass
 
         return new_slide
 
@@ -4009,6 +4041,47 @@ class ContentReplayer:
                 tf = ph.text_frame
                 for para in tf.paragraphs:
                     para.text = ""
+
+    def _remove_body_placeholders(self, slide):
+        """Remove body/content placeholders from slide to avoid overlapping with migrated text boxes."""
+        header_footer_types = (13, 14, 15, 16)
+        title_types = (1, 3, 4)
+        
+        shapes_to_remove = []
+        for shape in slide.placeholders:
+            try:
+                ph_type = shape.placeholder_format.type
+                if ph_type not in title_types and ph_type not in header_footer_types:
+                    shapes_to_remove.append(shape)
+            except Exception:
+                continue
+        
+        spTree = slide.shapes._spTree
+        for shape in shapes_to_remove:
+            try:
+                spTree.remove(shape._element)
+            except Exception:
+                continue
+
+    def _remove_footer_placeholders(self, slide):
+        """Remove footer-related placeholders (slide number, footer, date, header) from slide."""
+        footer_types = (13, 14, 15, 16)
+        
+        shapes_to_remove = []
+        for shape in slide.placeholders:
+            try:
+                ph_type = shape.placeholder_format.type
+                if ph_type in footer_types:
+                    shapes_to_remove.append(shape)
+            except Exception:
+                continue
+        
+        spTree = slide.shapes._spTree
+        for shape in shapes_to_remove:
+            try:
+                spTree.remove(shape._element)
+            except Exception:
+                continue
 
     def _normalize_fonts(self, slide) -> set:
         """
