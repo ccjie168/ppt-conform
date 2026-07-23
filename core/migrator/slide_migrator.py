@@ -2,20 +2,22 @@ from pptx import Presentation
 from pptx.util import Pt
 from pptx.enum.text import PP_ALIGN
 from core.clrmap.resolver import ClrMapResolver
+from core.migrator.object_migrator import ObjectMigrator
 
 
 class SlideMigrator:
-    """Content Migration: create new slide from template layout, migrate text content only."""
+    """Content Migration: create new slide from template layout, migrate text and objects."""
 
     def __init__(self, template_path: str, master_index: int):
         self.template_path = template_path
         self.master_index = master_index
         self.clr_resolver = ClrMapResolver(template_path, master_index)
+        self.object_migrator = ObjectMigrator()
 
     def migrate_slide(self, source_slide, target_prs, slide_type: str, layout_index: int):
         """
-        Create a new slide based on target layout, migrate text content from source.
-        Returns the new slide object.
+        Create a new slide based on target layout, migrate text content
+        and non-placeholder objects from source. Returns the new slide object.
         """
         # Get target layout
         if self.master_index >= len(target_prs.slide_masters):
@@ -39,6 +41,9 @@ class SlideMigrator:
         self._fill_title(new_slide, title_text)
         self._fill_subtitle(new_slide, subtitle_text)
         self._fill_body(new_slide, body_paragraphs)
+
+        # 4. Migrate non-placeholder objects (pictures, tables, shapes, etc.)
+        self.object_migrator.migrate_objects(source_slide, new_slide)
 
         return new_slide
 

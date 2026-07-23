@@ -3960,13 +3960,16 @@ class ContentReplayer:
         return output_path, qa_items
 
     def _adapt_single_slide(self, source_slide, target_prs, master_idx, classification):
-        """Adaptation path: create new slide from target layout, copy text content."""
+        """Enhanced adaptation path: create new slide from target layout,
+        copy text to placeholders, and migrate non-placeholder objects."""
+        from core.migrator.object_migrator import ObjectMigrator
+
         master = target_prs.slide_masters[min(master_idx, len(target_prs.slide_masters) - 1)]
         layout_idx = min(classification.target_layout_index, len(master.slide_layouts) - 1)
         target_layout = master.slide_layouts[layout_idx]
         new_slide = target_prs.slides.add_slide(target_layout)
 
-        # Copy text content (simplified: title + body text)
+        # 1. Copy text content to placeholders
         title_text = ""
         body_texts = []
         title_shape = source_slide.shapes.title if source_slide.shapes.title else None
@@ -3980,12 +3983,14 @@ class ContentReplayer:
         if new_slide.shapes.title and title_text:
             new_slide.shapes.title.text = title_text
 
-        # Put body text in first body placeholder
         for ph in new_slide.placeholders:
             ph_type = ph.placeholder_format.type
             if ph_type == 2 and ph.has_text_frame:  # BODY
                 ph.text_frame.text = "\n".join(body_texts)
                 break
+
+        # 2. Migrate non-placeholder objects (pictures, tables, shapes, etc.)
+        ObjectMigrator().migrate_objects(source_slide, new_slide)
 
         return new_slide
 
