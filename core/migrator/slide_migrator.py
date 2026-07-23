@@ -66,10 +66,13 @@ class SlideMigrator:
 
         if new_slide.shapes.title and title_text:
             new_slide.shapes.title.text = title_text
+            self._apply_title_style(new_slide.shapes.title, bg_dark)
+        
         for ph in new_slide.placeholders:
             ph_type = ph.placeholder_format.type
             if ph_type == 4 and ph.has_text_frame and subtitle_text:
                 ph.text_frame.text = subtitle_text
+                self._apply_subtitle_style(ph, bg_dark)
 
         return new_slide
 
@@ -166,3 +169,43 @@ class SlideMigrator:
                     for run in para.runs:
                         run.font.name = "Poppins"
                 return
+
+    def _apply_title_style(self, title_shape, bg_dark: bool):
+        """Apply template title style to title shape."""
+        if not title_shape or not title_shape.has_text_frame:
+            return
+        from pptx.dml.color import RGBColor
+        for para in title_shape.text_frame.paragraphs:
+            for run in para.runs:
+                run.font.name = "Poppins"
+                run.font._element.set('eastAsian', 'Poppins')
+                if bg_dark:
+                    try:
+                        run.font.color.rgb = RGBColor.from_string("FFFFFF")
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        run.font.color.rgb = RGBColor.from_string("0A2F24")
+                    except Exception:
+                        pass
+
+    def _apply_subtitle_style(self, subtitle_shape, bg_dark: bool):
+        """Apply template subtitle style to subtitle shape."""
+        if not subtitle_shape or not subtitle_shape.has_text_frame:
+            return
+        from pptx.dml.color import RGBColor
+        for para in subtitle_shape.text_frame.paragraphs:
+            for run in para.runs:
+                run.font.name = "Poppins"
+                run.font._element.set('eastAsian', 'Poppins')
+                if bg_dark:
+                    try:
+                        run.font.color.rgb = RGBColor.from_string("E8F5E9")
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        run.font.color.rgb = RGBColor.from_string("718096")
+                    except Exception:
+                        pass

@@ -24,11 +24,13 @@ from core.migrator.coordinate_mapper import CoordinateMapper
 class ObjectMigrator:
     """Migrate non-placeholder objects with position matching and overflow handling."""
 
-    FOOTER_RATIO = 0.88
+    FOOTER_RATIO = 0.82
     LOGO_MAX_W, LOGO_MAX_H = 500_000, 200_000
     TINY_SIZE = 50_000
 
-    FOOTER_KEYWORDS = ["se.com", "schneider", "copyright", "\u00a9", "page", "footer"]
+    FOOTER_KEYWORDS = ["se.com", "schneider", "copyright", "\u00a9", "page", "footer",
+                       "kunpeng", "version", "v.", "rev.", "date", "draft", "confidential",
+                       "slide", "number", "\u4f4d\u7f6e", "\u7b2c", "of", "\u9875", "ppt", "powerpoint"]
     WATERMARK_KEYWORDS = ["trademark", "confidential", "draft", "watermark", "trae ai", "ai generated", "ai 生成"]
 
     SIZE_NORMALIZATION = {
@@ -141,6 +143,12 @@ class ObjectMigrator:
             return True
 
         if st == MSO_SHAPE_TYPE.TEXT_BOX:
+            matched_zone = self.position_matcher.match_shape(shape) if self.position_matcher else None
+            ph_type = matched_zone.ph_type if matched_zone else None
+            
+            if ph_type == 0 or ph_type == 4:
+                return False
+            
             self._migrate_text_box_with_position(shape, new_slide)
             self._adjust_overflow(new_slide.shapes[-1])
             return True
@@ -192,6 +200,12 @@ class ObjectMigrator:
 
         left, top, width, height = self._get_mapped_position(shape)
 
+        if ph_type == 2 and matched_zone:
+            left = matched_zone.left
+            top = matched_zone.top
+            width = matched_zone.width
+            height = matched_zone.height
+
         txBox = new_slide.shapes.add_textbox(
             left, top, width, height
         )
@@ -205,6 +219,7 @@ class ObjectMigrator:
             new_para.text = para.text
             new_para.level = para.level
             new_para.font.size = Pt(target_size)
+            new_para.font.name = "Poppins"
             try:
                 new_para.font.color.rgb = RGBColor.from_string(self.text_color.lstrip("#"))
             except Exception:
@@ -260,6 +275,11 @@ class ObjectMigrator:
                 text = shape.text_frame.text.lower()
                 if any(kw in text for kw in self.FOOTER_KEYWORDS):
                     return True
+                text_length = len(text.strip())
+                if text_length > 0 and text_length < 80:
+                    return True
+            if shape.shape_type == MSO_SHAPE_TYPE.TEXT_BOX:
+                return True
 
         if shape.has_text_frame:
             text = shape.text_frame.text.lower()
