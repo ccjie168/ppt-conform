@@ -4,9 +4,10 @@ Handles pictures, tables, text boxes, auto-shapes, lines, etc.
 Filters out decorative objects (old logos, watermarks, footers).
 
 NEW FEATURES:
-1. Text box semantic classification (title/subtitle/body/footer/watermark)
-2. Format normalization (font size mapping, color mapping to theme)
-3. Returns semantic classification for caller to fill placeholders
+1. Position-based placeholder matching for free text boxes
+2. Format normalization based on matched placeholder type
+3. Overflow detection and adjustment
+4. Full object preservation (no skipping title/subtitle)
 """
 
 from io import BytesIO
@@ -15,9 +16,12 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Pt
 from pptx.dml.color import RGBColor
 
+from core.migrator.position_matcher import PositionMatcher
+from core.migrator.overflow_adjuster import OverflowAdjuster
+
 
 class ObjectMigrator:
-    """Migrate non-placeholder objects while filtering decorative ones."""
+    """Migrate non-placeholder objects with position matching and overflow handling."""
 
     FOOTER_RATIO = 0.88
     LOGO_MAX_W, LOGO_MAX_H = 500_000, 200_000
@@ -26,25 +30,12 @@ class ObjectMigrator:
     FOOTER_KEYWORDS = ["se.com", "schneider", "copyright", "\u00a9", "page", "footer"]
     WATERMARK_KEYWORDS = ["trademark", "confidential", "draft", "watermark", "trae ai", "ai generated", "ai 生成"]
 
-    # Font size semantics (pt)
-    SIZE_THRESHOLDS = {
-        "title": (28, float("inf")),
-        "subtitle": (20, 27),
-        "body": (14, 19),
-        "caption": (10, 13),
-        "footer": (0, 9),
-    }
-
-    # Font size normalization mapping (pt)
     SIZE_NORMALIZATION = {
-        "title": 24,
-        "subtitle": 16,
-        "body": 11,
-        "caption": 9,
-        "footer": 8,
+        0: 24,
+        4: 16,
+        2: 11,
     }
 
-    # Color mapping: original color -> normalized color
     COLOR_MAPPING = {
         "#1f3a68": "#0A2F24",
         "#000000": "#0A2F24",
@@ -56,15 +47,17 @@ class ObjectMigrator:
         "#cc0000": "#DC2626",
     }
 
-    def __init__(self, text_color="#0A2F24", bg_dark=False, skip_title_subtitle=True):
+    def __init__(self, text_color="#0A2F24", bg_dark=False, position_matcher=None, overflow_adjuster=None):
         self.text_color = text_color
         self.bg_dark = bg_dark
-        self.skip_title_subtitle = skip_title_subtitle
+        self.position_matcher = position_matcher
+        self.overflow_adjuster = overflow_adjuster
 
     def migrate_objects(self, source_slide, new_slide, slide_width=None, slide_height=None) -> tuple[int, int, dict]:
         """
         Migrate all non-placeholder, non-decorative objects.
-        Filters out objects that overflow page boundaries.
+        Position-match free text boxes to target placeholders.
+        Adjust overflowing objects.
         Returns (migrated_count, skipped_count, semantic_info).
         """
         migrated = 0
@@ -80,6 +73,9 @@ class ObjectMigrator:
             slide_width = slide_width or 12192000
             slide_height = slide_height or 6858000
 
+        if self.overflow_adjuster is None:
+            self.overflow_adjuster = OverflowAdjuster(slide_width, slide_height)
+
         classified_text_boxes = self._classify_text_boxes(source_slide)
 
         for shape in source_slide.shapes:
@@ -88,12 +84,9 @@ class ObjectMigrator:
             if self.is_decorative(shape, source_slide):
                 skipped += 1
                 continue
-            if self._is_overflow(shape, slide_width, slide_height):
-                skipped += 1
-                continue
 
             try:
-                if self._migrate_single(shape, new_slide, classified_text_boxes):
+                if self._migrate_single(shape, new_slide, slide_width, slide_height):
                     migrated += 1
                 else:
                     skipped += 1
@@ -103,17 +96,8 @@ class ObjectMigrator:
         semantic_info.update(classified_text_boxes)
         return migrated, skipped, semantic_info
 
-    def _is_overflow(self, shape, slide_width, slide_height) -> bool:
-        """Check if shape extends beyond page boundaries."""
-        try:
-            right = shape.left + shape.width
-            bottom = shape.top + shape.height
-            return right > slide_width * 1.05 or bottom > slide_height * 1.05
-        except Exception:
-            return False
-
     def _classify_text_boxes(self, source_slide) -> dict:
-        """Classify text boxes by semantics and extract content."""
+        """Classify text boxes by semantics."""
         title_text = ""
         subtitle_text = ""
         body_texts = []
@@ -128,100 +112,110 @@ class ObjectMigrator:
             if not text:
                 continue
 
-            semantics = self._analyze_text_box_semantics(shape, source_slide)
+            matched_zone = self.position_matcher.match_shape(shape) if self.position_matcher else None
+            ph_type = matched_zone.ph_type if matched_zone else None
 
-            if semantics == "title" and not title_text:
+            if ph_type == 0 and not title_text:
                 title_text = text
-            elif semantics == "subtitle" and not subtitle_text:
+            elif ph_type == 4 and not subtitle_text:
                 subtitle_text = text
-            elif semantics == "body":
-                body_texts.append(text)
-            elif semantics == "caption":
+            elif ph_type == 2 or ph_type is None:
                 body_texts.append(text)
 
-        return {
-            "title_text": title_text,
-            "subtitle_text": subtitle_text,
-            "body_texts": body_texts,
-        }
+        return {"title_text": title_text, "subtitle_text": subtitle_text, "body_texts": body_texts}
 
-    def _analyze_text_box_semantics(self, shape, source_slide) -> str:
-        """Analyze text box semantics based on position, size, and font."""
-        try:
-            prs = source_slide.part.package.presentation_part.presentation
-            slide_height = prs.slide_height
-            slide_width = prs.slide_width
-        except Exception:
-            slide_height = 6858000
-            slide_width = 12192000
-
-        text = shape.text_frame.text.lower()
-
-        if any(kw in text for kw in self.WATERMARK_KEYWORDS):
-            return "watermark"
-
-        if shape.top > slide_height * self.FOOTER_RATIO:
-            return "footer"
-
-        font_size = self._get_shape_font_size(shape)
-
-        for semantic, (min_size, max_size) in self.SIZE_THRESHOLDS.items():
-            if min_size <= font_size <= max_size:
-                return semantic
-
-        if shape.top < slide_height * 0.25:
-            return "title"
-        elif shape.top < slide_height * 0.5:
-            return "subtitle"
-        else:
-            return "body"
-
-    def _get_shape_font_size(self, shape) -> float:
-        """Get the font size of a text box (average or largest)."""
-        sizes = []
-        if shape.has_text_frame:
-            for para in shape.text_frame.paragraphs:
-                for run in para.runs:
-                    if run.font.size:
-                        sizes.append(run.font.size.pt)
-        return max(sizes) if sizes else 11
-
-    def _get_shape_font_color(self, shape) -> str:
-        """Get the font color of a text box as hex string."""
-        colors = []
-        if shape.has_text_frame:
-            for para in shape.text_frame.paragraphs:
-                for run in para.runs:
-                    if run.font.color and run.font.color.rgb:
-                        colors.append("#" + run.font.color.rgb.hex)
-        return colors[0] if colors else "#000000"
-
-    def _migrate_single(self, shape, new_slide, classified_boxes) -> bool:
-        """Dispatch to type-specific migration with format normalization."""
+    def _migrate_single(self, shape, new_slide, slide_width, slide_height) -> bool:
+        """Dispatch to type-specific migration with position matching and overflow handling."""
         st = shape.shape_type
+
         if st == MSO_SHAPE_TYPE.PICTURE:
-            self.migrate_picture(shape, new_slide)
+            self._migrate_picture(shape, new_slide)
+            self._adjust_overflow(new_slide.shapes[-1])
             return True
+
         if st == MSO_SHAPE_TYPE.TABLE:
-            self.migrate_table(shape, new_slide)
+            self._migrate_table(shape, new_slide)
+            self._adjust_overflow(new_slide.shapes[-1])
             return True
+
         if st == MSO_SHAPE_TYPE.TEXT_BOX:
-            semantics = self._analyze_text_box_semantics(shape, new_slide)
-            if self.skip_title_subtitle and semantics in ("title", "subtitle"):
-                return False
-            self.migrate_text_box(shape, new_slide, semantics)
+            self._migrate_text_box_with_position(shape, new_slide)
+            self._adjust_overflow(new_slide.shapes[-1])
             return True
+
         if st in (MSO_SHAPE_TYPE.AUTO_SHAPE, MSO_SHAPE_TYPE.FREEFORM):
-            if shape.has_text_frame and shape.text_frame.text.strip():
-                semantics = self._analyze_text_box_semantics(shape, new_slide)
-                if self.skip_title_subtitle and semantics in ("title", "subtitle"):
-                    return False
-            self.migrate_shape_by_xml(shape, new_slide)
+            self._migrate_shape_by_xml(shape, new_slide)
+            self._adjust_overflow(new_slide.shapes[-1])
             return True
+
         if st == MSO_SHAPE_TYPE.LINE:
-            self.migrate_line(shape, new_slide)
+            self._migrate_line(shape, new_slide)
             return True
+
         return False
+
+    def _adjust_overflow(self, shape):
+        """Adjust shape if it overflows page boundaries."""
+        if self.overflow_adjuster:
+            self.overflow_adjuster.adjust_shape(shape)
+
+    def _migrate_picture(self, shape, new_slide):
+        image_stream = BytesIO(shape.image.blob)
+        new_slide.shapes.add_picture(
+            image_stream, shape.left, shape.top, shape.width, shape.height
+        )
+
+    def _migrate_table(self, shape, new_slide):
+        table = shape.table
+        rows, cols = len(table.rows), len(table.columns)
+        new_table = new_slide.shapes.add_table(
+            rows, cols, shape.left, shape.top, shape.width, shape.height
+        ).table
+        for i, row in enumerate(table.rows):
+            for j, cell in enumerate(row.cells):
+                new_table.cell(i, j).text = cell.text
+
+    def _migrate_text_box_with_position(self, shape, new_slide):
+        """Migrate text box with format based on position-matched placeholder."""
+        matched_zone = self.position_matcher.match_shape(shape) if self.position_matcher else None
+        ph_type = matched_zone.ph_type if matched_zone else None
+
+        txBox = new_slide.shapes.add_textbox(
+            shape.left, shape.top, shape.width, shape.height
+        )
+        tf = txBox.text_frame
+        tf.word_wrap = shape.text_frame.word_wrap
+
+        target_size = self.SIZE_NORMALIZATION.get(ph_type, 11)
+
+        for i, para in enumerate(shape.text_frame.paragraphs):
+            new_para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+            new_para.text = para.text
+            new_para.level = para.level
+            new_para.font.size = Pt(target_size)
+            try:
+                new_para.font.color.rgb = RGBColor.from_string(self.text_color.lstrip("#"))
+            except Exception:
+                pass
+
+    def _migrate_shape_by_xml(self, shape, new_slide):
+        new_sp = deepcopy(shape._element)
+        nsmap = {
+            "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+            "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+        }
+        nvSpPr = new_sp.find(".//p:nvSpPr", nsmap)
+        if nvSpPr is not None:
+            ph = nvSpPr.find(".//p:ph", nsmap)
+            if ph is not None:
+                nvSpPr.remove(ph)
+        new_slide.shapes._spTree.insert_element_before(new_sp, "p:extLst")
+
+    def _migrate_line(self, shape, new_slide):
+        from pptx.enum.shapes import MSO_SHAPE
+        new_slide.shapes.add_shape(
+            MSO_SHAPE.LINE_INVERSE, shape.left, shape.top, shape.width, shape.height
+        )
 
     def is_decorative(self, shape, source_slide) -> bool:
         """True if shape is an old logo, watermark, footer, etc."""
@@ -253,59 +247,3 @@ class ObjectMigrator:
             pass
 
         return False
-
-    def migrate_picture(self, shape, new_slide):
-        image_stream = BytesIO(shape.image.blob)
-        new_slide.shapes.add_picture(
-            image_stream, shape.left, shape.top, shape.width, shape.height
-        )
-
-    def migrate_table(self, shape, new_slide):
-        table = shape.table
-        rows, cols = len(table.rows), len(table.columns)
-        new_table = new_slide.shapes.add_table(
-            rows, cols, shape.left, shape.top, shape.width, shape.height
-        ).table
-        for i, row in enumerate(table.rows):
-            for j, cell in enumerate(row.cells):
-                new_table.cell(i, j).text = cell.text
-
-    def migrate_text_box(self, shape, new_slide, semantics="body"):
-        """Migrate text box with format normalization based on semantics."""
-        txBox = new_slide.shapes.add_textbox(
-            shape.left, shape.top, shape.width, shape.height
-        )
-        tf = txBox.text_frame
-        tf.word_wrap = shape.text_frame.word_wrap
-
-        target_size = self.SIZE_NORMALIZATION.get(semantics, 11)
-        target_color = self.text_color
-
-        for i, para in enumerate(shape.text_frame.paragraphs):
-            new_para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-            new_para.text = para.text
-            new_para.level = para.level
-            new_para.font.size = Pt(target_size)
-        try:
-            new_para.font.color.rgb = RGBColor.from_string(target_color.lstrip("#"))
-        except Exception:
-            pass
-
-    def migrate_shape_by_xml(self, shape, new_slide):
-        new_sp = deepcopy(shape._element)
-        nsmap = {
-            "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-            "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
-        }
-        nvSpPr = new_sp.find(".//p:nvSpPr", nsmap)
-        if nvSpPr is not None:
-            ph = nvSpPr.find(".//p:ph", nsmap)
-            if ph is not None:
-                nvSpPr.remove(ph)
-        new_slide.shapes._spTree.insert_element_before(new_sp, "p:extLst")
-
-    def migrate_line(self, shape, new_slide):
-        from pptx.enum.shapes import MSO_SHAPE
-        new_slide.shapes.add_shape(
-            MSO_SHAPE.LINE_INVERSE, shape.left, shape.top, shape.width, shape.height
-        )

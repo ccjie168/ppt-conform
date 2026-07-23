@@ -3960,36 +3960,44 @@ class ContentReplayer:
         return output_path, qa_items
 
     def _adapt_single_slide(self, source_slide, target_prs, master_idx, classification):
-        """Adaptation path: use blank layout + migrate all objects with format normalization."""
+        """Adaptation path: use specified layout + position matching + overflow adjustment."""
         from core.migrator.object_migrator import ObjectMigrator
+        from core.migrator.position_matcher import PositionMatcher
+        from core.migrator.overflow_adjuster import OverflowAdjuster
 
         master = target_prs.slide_masters[min(master_idx, len(target_prs.slide_masters) - 1)]
+        layout_idx = min(classification.target_layout_index, len(master.slide_layouts) - 1)
+        target_layout = master.slide_layouts[layout_idx]
+        new_slide = target_prs.slides.add_slide(target_layout)
 
-        blank_layout = None
-        for layout in master.slide_layouts:
-            if layout.name.lower().startswith("blank"):
-                blank_layout = layout
-                break
-        if blank_layout is None:
-            blank_layout = master.slide_layouts[min(6, len(master.slide_layouts) - 1)]
-
-        new_slide = target_prs.slides.add_slide(blank_layout)
+        self._clear_placeholder_defaults(new_slide)
 
         bg_dark = master_idx == 2
         text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
-        try:
-            src_prs = source_slide.part.package.presentation_part.presentation
-            src_width = src_prs.slide_width
-            src_height = src_prs.slide_height
-        except Exception:
-            src_width = target_prs.slide_width
-            src_height = target_prs.slide_height
+        slide_width = target_prs.slide_width
+        slide_height = target_prs.slide_height
 
-        object_migrator = ObjectMigrator(text_color=text_color, bg_dark=bg_dark, skip_title_subtitle=False)
-        object_migrator.migrate_objects(source_slide, new_slide, src_width, src_height)
+        position_matcher = PositionMatcher(target_prs, master_idx)
+        overflow_adjuster = OverflowAdjuster(slide_width, slide_height)
+
+        object_migrator = ObjectMigrator(
+            text_color=text_color,
+            bg_dark=bg_dark,
+            position_matcher=position_matcher,
+            overflow_adjuster=overflow_adjuster
+        )
+        object_migrator.migrate_objects(source_slide, new_slide, slide_width, slide_height)
 
         return new_slide
+
+    def _clear_placeholder_defaults(self, slide):
+        """Clear default placeholder text like 'Click to edit master title style'."""
+        for ph in slide.placeholders:
+            if ph.has_text_frame:
+                tf = ph.text_frame
+                for para in tf.paragraphs:
+                    para.text = ""
 
     def _normalize_fonts(self, slide) -> set:
         """
