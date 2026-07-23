@@ -15,8 +15,7 @@ class SlideMigrator:
 
     def migrate_slide(self, source_slide, target_prs, slide_type: str, layout_index: int):
         """
-        Create a new slide based on target layout, migrate text content
-        and non-placeholder objects from source with semantic classification.
+        Create a new slide based on blank layout, migrate all objects from source.
         Returns the new slide object.
         """
         if self.master_index >= len(target_prs.slide_masters):
@@ -24,39 +23,41 @@ class SlideMigrator:
         else:
             master = target_prs.slide_masters[self.master_index]
 
-        if layout_index >= len(master.slide_layouts):
-            layout_index = 0
-        target_layout = master.slide_layouts[layout_index]
+        blank_layout = None
+        for layout in master.slide_layouts:
+            if layout.name.lower().startswith("blank"):
+                blank_layout = layout
+                break
+        if blank_layout is None:
+            blank_layout = master.slide_layouts[min(6, len(master.slide_layouts) - 1)]
 
-        new_slide = target_prs.slides.add_slide(target_layout)
-
-        self._clear_placeholder_defaults(new_slide)
+        new_slide = target_prs.slides.add_slide(blank_layout)
 
         bg_dark = self.master_index == 2
         text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
-        slide_width = target_prs.slide_width
-        slide_height = target_prs.slide_height
+        try:
+            src_prs = source_slide.part.package.presentation_part.presentation
+            src_width = src_prs.slide_width
+            src_height = src_prs.slide_height
+        except Exception:
+            src_width = target_prs.slide_width
+            src_height = target_prs.slide_height
 
-        object_migrator = ObjectMigrator(text_color=text_color, bg_dark=bg_dark)
-        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide, slide_width, slide_height)
+        object_migrator = ObjectMigrator(text_color=text_color, bg_dark=bg_dark, skip_title_subtitle=False)
+        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide, src_width, src_height)
 
         title_text = semantic_info.get("title_text", "") or self._extract_title(source_slide)
         subtitle_text = semantic_info.get("subtitle_text", "") or self._extract_subtitle(source_slide)
 
-        self._fill_title(new_slide, title_text)
-        self._fill_subtitle(new_slide, subtitle_text)
+        if new_slide.shapes.title and title_text:
+            new_slide.shapes.title.text = title_text
+        for ph in new_slide.placeholders:
+            ph_type = ph.placeholder_format.type
+            if ph_type == 4 and ph.has_text_frame and subtitle_text:
+                ph.text_frame.text = subtitle_text
 
         return new_slide
-
-    def _clear_placeholder_defaults(self, slide):
-        """Clear default placeholder text like 'Click to edit master title style'."""
-        for ph in slide.placeholders:
-            if ph.has_text_frame:
-                tf = ph.text_frame
-                tf.clear()
-                for para in tf.paragraphs:
-                    para.text = ""
 
     def _extract_title(self, slide) -> str:
         if slide.shapes.title:
