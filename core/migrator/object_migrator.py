@@ -18,6 +18,7 @@ from pptx.dml.color import RGBColor
 
 from core.migrator.position_matcher import PositionMatcher
 from core.migrator.overflow_adjuster import OverflowAdjuster
+from core.migrator.coordinate_mapper import CoordinateMapper
 
 
 class ObjectMigrator:
@@ -47,11 +48,12 @@ class ObjectMigrator:
         "#cc0000": "#DC2626",
     }
 
-    def __init__(self, text_color="#0A2F24", bg_dark=False, position_matcher=None, overflow_adjuster=None):
+    def __init__(self, text_color="#0A2F24", bg_dark=False, position_matcher=None, overflow_adjuster=None, coordinate_mapper=None):
         self.text_color = text_color
         self.bg_dark = bg_dark
         self.position_matcher = position_matcher
         self.overflow_adjuster = overflow_adjuster
+        self.coordinate_mapper = coordinate_mapper
 
     def migrate_objects(self, source_slide, new_slide, slide_width=None, slide_height=None) -> tuple[int, int, dict]:
         """
@@ -159,17 +161,25 @@ class ObjectMigrator:
         if self.overflow_adjuster:
             self.overflow_adjuster.adjust_shape(shape)
 
+    def _get_mapped_position(self, shape):
+        """Get mapped position using coordinate mapper if available."""
+        if self.coordinate_mapper:
+            return self.coordinate_mapper.map_shape(shape, mode="fit_width")
+        return shape.left, shape.top, shape.width, shape.height
+
     def _migrate_picture(self, shape, new_slide):
         image_stream = BytesIO(shape.image.blob)
+        left, top, width, height = self._get_mapped_position(shape)
         new_slide.shapes.add_picture(
-            image_stream, shape.left, shape.top, shape.width, shape.height
+            image_stream, left, top, width, height
         )
 
     def _migrate_table(self, shape, new_slide):
         table = shape.table
         rows, cols = len(table.rows), len(table.columns)
+        left, top, width, height = self._get_mapped_position(shape)
         new_table = new_slide.shapes.add_table(
-            rows, cols, shape.left, shape.top, shape.width, shape.height
+            rows, cols, left, top, width, height
         ).table
         for i, row in enumerate(table.rows):
             for j, cell in enumerate(row.cells):
@@ -180,8 +190,10 @@ class ObjectMigrator:
         matched_zone = self.position_matcher.match_shape(shape) if self.position_matcher else None
         ph_type = matched_zone.ph_type if matched_zone else None
 
+        left, top, width, height = self._get_mapped_position(shape)
+
         txBox = new_slide.shapes.add_textbox(
-            shape.left, shape.top, shape.width, shape.height
+            left, top, width, height
         )
         tf = txBox.text_frame
         tf.word_wrap = shape.text_frame.word_wrap
@@ -209,12 +221,27 @@ class ObjectMigrator:
             ph = nvSpPr.find(".//p:ph", nsmap)
             if ph is not None:
                 nvSpPr.remove(ph)
+
+        if self.coordinate_mapper:
+            left, top, width, height = self.coordinate_mapper.map_shape(shape, mode="fit_width")
+            xfrm = new_sp.find(".//a:xfrm", nsmap)
+            if xfrm is not None:
+                off = xfrm.find(".//a:off", nsmap)
+                if off is not None:
+                    off.set("x", str(int(left)))
+                    off.set("y", str(int(top)))
+                ext = xfrm.find(".//a:ext", nsmap)
+                if ext is not None:
+                    ext.set("cx", str(int(width)))
+                    ext.set("cy", str(int(height)))
+
         new_slide.shapes._spTree.insert_element_before(new_sp, "p:extLst")
 
     def _migrate_line(self, shape, new_slide):
         from pptx.enum.shapes import MSO_SHAPE
+        left, top, width, height = self._get_mapped_position(shape)
         new_slide.shapes.add_shape(
-            MSO_SHAPE.LINE_INVERSE, shape.left, shape.top, shape.width, shape.height
+            MSO_SHAPE.LINE_INVERSE, left, top, width, height
         )
 
     def is_decorative(self, shape, source_slide) -> bool:

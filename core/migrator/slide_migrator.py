@@ -20,6 +20,7 @@ class SlideMigrator:
         """
         from core.migrator.position_matcher import PositionMatcher
         from core.migrator.overflow_adjuster import OverflowAdjuster
+        from core.migrator.coordinate_mapper import CoordinateMapper
 
         if self.master_index >= len(target_prs.slide_masters):
             master = target_prs.slide_masters[0]
@@ -36,19 +37,29 @@ class SlideMigrator:
         bg_dark = self.master_index == 2
         text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
-        slide_width = target_prs.slide_width
-        slide_height = target_prs.slide_height
+        tgt_width = target_prs.slide_width
+        tgt_height = target_prs.slide_height
+
+        try:
+            src_prs = source_slide.part.package.presentation_part.presentation
+            src_width = src_prs.slide_width
+            src_height = src_prs.slide_height
+        except Exception:
+            src_width = tgt_width
+            src_height = tgt_height
 
         position_matcher = PositionMatcher(target_prs, self.master_index)
-        overflow_adjuster = OverflowAdjuster(slide_width, slide_height)
+        overflow_adjuster = OverflowAdjuster(tgt_width, tgt_height)
+        coordinate_mapper = CoordinateMapper(src_width, src_height, tgt_width, tgt_height)
 
         object_migrator = ObjectMigrator(
             text_color=text_color,
             bg_dark=bg_dark,
             position_matcher=position_matcher,
-            overflow_adjuster=overflow_adjuster
+            overflow_adjuster=overflow_adjuster,
+            coordinate_mapper=coordinate_mapper
         )
-        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide, slide_width, slide_height)
+        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide, tgt_width, tgt_height)
 
         title_text = semantic_info.get("title_text", "") or self._extract_title(source_slide)
         subtitle_text = semantic_info.get("subtitle_text", "") or self._extract_subtitle(source_slide)

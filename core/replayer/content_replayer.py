@@ -3964,6 +3964,7 @@ class ContentReplayer:
         from core.migrator.object_migrator import ObjectMigrator
         from core.migrator.position_matcher import PositionMatcher
         from core.migrator.overflow_adjuster import OverflowAdjuster
+        from core.migrator.coordinate_mapper import CoordinateMapper
 
         master = target_prs.slide_masters[min(master_idx, len(target_prs.slide_masters) - 1)]
         layout_idx = min(classification.target_layout_index, len(master.slide_layouts) - 1)
@@ -3975,19 +3976,29 @@ class ContentReplayer:
         bg_dark = master_idx == 2
         text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
-        slide_width = target_prs.slide_width
-        slide_height = target_prs.slide_height
+        tgt_width = target_prs.slide_width
+        tgt_height = target_prs.slide_height
+
+        try:
+            src_prs = source_slide.part.package.presentation_part.presentation
+            src_width = src_prs.slide_width
+            src_height = src_prs.slide_height
+        except Exception:
+            src_width = tgt_width
+            src_height = tgt_height
 
         position_matcher = PositionMatcher(target_prs, master_idx)
-        overflow_adjuster = OverflowAdjuster(slide_width, slide_height)
+        overflow_adjuster = OverflowAdjuster(tgt_width, tgt_height)
+        coordinate_mapper = CoordinateMapper(src_width, src_height, tgt_width, tgt_height)
 
         object_migrator = ObjectMigrator(
             text_color=text_color,
             bg_dark=bg_dark,
             position_matcher=position_matcher,
-            overflow_adjuster=overflow_adjuster
+            overflow_adjuster=overflow_adjuster,
+            coordinate_mapper=coordinate_mapper
         )
-        object_migrator.migrate_objects(source_slide, new_slide, slide_width, slide_height)
+        object_migrator.migrate_objects(source_slide, new_slide, tgt_width, tgt_height)
 
         return new_slide
 
