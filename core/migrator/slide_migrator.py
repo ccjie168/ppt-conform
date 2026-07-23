@@ -30,11 +30,16 @@ class SlideMigrator:
 
         new_slide = target_prs.slides.add_slide(target_layout)
 
+        self._clear_placeholder_defaults(new_slide)
+
         bg_dark = self.master_index == 2
         text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
+        slide_width = target_prs.slide_width
+        slide_height = target_prs.slide_height
+
         object_migrator = ObjectMigrator(text_color=text_color, bg_dark=bg_dark)
-        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide)
+        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide, slide_width, slide_height)
 
         title_text = semantic_info.get("title_text", "") or self._extract_title(source_slide)
         subtitle_text = semantic_info.get("subtitle_text", "") or self._extract_subtitle(source_slide)
@@ -43,6 +48,15 @@ class SlideMigrator:
         self._fill_subtitle(new_slide, subtitle_text)
 
         return new_slide
+
+    def _clear_placeholder_defaults(self, slide):
+        """Clear default placeholder text like 'Click to edit master title style'."""
+        for ph in slide.placeholders:
+            if ph.has_text_frame:
+                tf = ph.text_frame
+                tf.clear()
+                for para in tf.paragraphs:
+                    para.text = ""
 
     def _extract_title(self, slide) -> str:
         if slide.shapes.title:

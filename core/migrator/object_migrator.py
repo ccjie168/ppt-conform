@@ -61,15 +61,24 @@ class ObjectMigrator:
         self.bg_dark = bg_dark
         self.skip_title_subtitle = skip_title_subtitle
 
-    def migrate_objects(self, source_slide, new_slide) -> tuple[int, int, dict]:
+    def migrate_objects(self, source_slide, new_slide, slide_width=None, slide_height=None) -> tuple[int, int, dict]:
         """
         Migrate all non-placeholder, non-decorative objects.
+        Filters out objects that overflow page boundaries.
         Returns (migrated_count, skipped_count, semantic_info).
-        semantic_info = {"title_text": str, "subtitle_text": str, "body_texts": list}
         """
         migrated = 0
         skipped = 0
         semantic_info = {"title_text": "", "subtitle_text": "", "body_texts": []}
+
+        try:
+            if slide_width is None or slide_height is None:
+                prs = source_slide.part.package.presentation_part.presentation
+                slide_width = prs.slide_width
+                slide_height = prs.slide_height
+        except Exception:
+            slide_width = slide_width or 12192000
+            slide_height = slide_height or 6858000
 
         classified_text_boxes = self._classify_text_boxes(source_slide)
 
@@ -77,6 +86,9 @@ class ObjectMigrator:
             if shape.is_placeholder:
                 continue
             if self.is_decorative(shape, source_slide):
+                skipped += 1
+                continue
+            if self._is_overflow(shape, slide_width, slide_height):
                 skipped += 1
                 continue
 
@@ -90,6 +102,15 @@ class ObjectMigrator:
 
         semantic_info.update(classified_text_boxes)
         return migrated, skipped, semantic_info
+
+    def _is_overflow(self, shape, slide_width, slide_height) -> bool:
+        """Check if shape extends beyond page boundaries."""
+        try:
+            right = shape.left + shape.width
+            bottom = shape.top + shape.height
+            return right > slide_width * 1.05 or bottom > slide_height * 1.05
+        except Exception:
+            return False
 
     def _classify_text_boxes(self, source_slide) -> dict:
         """Classify text boxes by semantics and extract content."""

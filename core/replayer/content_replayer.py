@@ -3960,7 +3960,7 @@ class ContentReplayer:
         return output_path, qa_items
 
     def _adapt_single_slide(self, source_slide, target_prs, master_idx, classification):
-        """Enhanced adaptation path: semantic classification + placeholder filling + object migration."""
+        """Enhanced adaptation path: clean layout + migrate objects only."""
         from core.migrator.object_migrator import ObjectMigrator
 
         master = target_prs.slide_masters[min(master_idx, len(target_prs.slide_masters) - 1)]
@@ -3968,24 +3968,27 @@ class ContentReplayer:
         target_layout = master.slide_layouts[layout_idx]
         new_slide = target_prs.slides.add_slide(target_layout)
 
+        self._clear_placeholder_defaults(new_slide)
+
         bg_dark = master_idx == 2
         text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
+        slide_width = target_prs.slide_width
+        slide_height = target_prs.slide_height
+
         object_migrator = ObjectMigrator(text_color=text_color, bg_dark=bg_dark)
-        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide)
-
-        title_text = semantic_info.get("title_text", "")
-        subtitle_text = semantic_info.get("subtitle_text", "")
-
-        if new_slide.shapes.title and title_text:
-            new_slide.shapes.title.text = title_text
-
-        for ph in new_slide.placeholders:
-            ph_type = ph.placeholder_format.type
-            if ph_type == 4 and ph.has_text_frame and subtitle_text:
-                ph.text_frame.text = subtitle_text
+        object_migrator.migrate_objects(source_slide, new_slide, slide_width, slide_height)
 
         return new_slide
+
+    def _clear_placeholder_defaults(self, slide):
+        """Clear default placeholder text like 'Click to edit master title style'."""
+        for ph in slide.placeholders:
+            if ph.has_text_frame:
+                tf = ph.text_frame
+                tf.clear()
+                for para in tf.paragraphs:
+                    para.text = ""
 
     def _normalize_fonts(self, slide) -> set:
         """
