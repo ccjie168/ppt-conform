@@ -12,14 +12,13 @@ class SlideMigrator:
         self.template_path = template_path
         self.master_index = master_index
         self.clr_resolver = ClrMapResolver(template_path, master_index)
-        self.object_migrator = ObjectMigrator()
 
     def migrate_slide(self, source_slide, target_prs, slide_type: str, layout_index: int):
         """
         Create a new slide based on target layout, migrate text content
-        and non-placeholder objects from source. Returns the new slide object.
+        and non-placeholder objects from source with semantic classification.
+        Returns the new slide object.
         """
-        # Get target layout
         if self.master_index >= len(target_prs.slide_masters):
             master = target_prs.slide_masters[0]
         else:
@@ -29,21 +28,21 @@ class SlideMigrator:
             layout_index = 0
         target_layout = master.slide_layouts[layout_index]
 
-        # 1. Create new slide
         new_slide = target_prs.slides.add_slide(target_layout)
 
-        # 2. Extract source content
-        title_text = self._extract_title(source_slide)
-        subtitle_text = self._extract_subtitle(source_slide)
-        body_paragraphs = self._extract_body_paragraphs(source_slide)
+        bg_dark = self.master_index == 2
+        text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
-        # 3. Fill placeholders
+        object_migrator = ObjectMigrator(text_color=text_color, bg_dark=bg_dark)
+        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide)
+
+        title_text = semantic_info.get("title_text", "") or self._extract_title(source_slide)
+        subtitle_text = semantic_info.get("subtitle_text", "") or self._extract_subtitle(source_slide)
+        body_paragraphs = semantic_info.get("body_texts", []) or self._extract_body_paragraphs(source_slide)
+
         self._fill_title(new_slide, title_text)
         self._fill_subtitle(new_slide, subtitle_text)
         self._fill_body(new_slide, body_paragraphs)
-
-        # 4. Migrate non-placeholder objects (pictures, tables, shapes, etc.)
-        self.object_migrator.migrate_objects(source_slide, new_slide)
 
         return new_slide
 

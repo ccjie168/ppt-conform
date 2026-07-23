@@ -3960,8 +3960,7 @@ class ContentReplayer:
         return output_path, qa_items
 
     def _adapt_single_slide(self, source_slide, target_prs, master_idx, classification):
-        """Enhanced adaptation path: create new slide from target layout,
-        copy text to placeholders, and migrate non-placeholder objects."""
+        """Enhanced adaptation path: semantic classification + placeholder filling + object migration."""
         from core.migrator.object_migrator import ObjectMigrator
 
         master = target_prs.slide_masters[min(master_idx, len(target_prs.slide_masters) - 1)]
@@ -3969,28 +3968,25 @@ class ContentReplayer:
         target_layout = master.slide_layouts[layout_idx]
         new_slide = target_prs.slides.add_slide(target_layout)
 
-        # 1. Copy text content to placeholders
-        title_text = ""
-        body_texts = []
-        title_shape = source_slide.shapes.title if source_slide.shapes.title else None
+        bg_dark = master_idx == 2
+        text_color = "#FFFFFF" if bg_dark else "#0A2F24"
 
-        for shape in source_slide.shapes:
-            if title_shape and shape == title_shape:
-                title_text = shape.text_frame.text
-            elif shape.has_text_frame and shape.text_frame.text.strip():
-                body_texts.append(shape.text_frame.text)
+        object_migrator = ObjectMigrator(text_color=text_color, bg_dark=bg_dark)
+        migrated, skipped, semantic_info = object_migrator.migrate_objects(source_slide, new_slide)
+
+        title_text = semantic_info.get("title_text", "")
+        subtitle_text = semantic_info.get("subtitle_text", "")
+        body_texts = semantic_info.get("body_texts", [])
 
         if new_slide.shapes.title and title_text:
             new_slide.shapes.title.text = title_text
 
         for ph in new_slide.placeholders:
             ph_type = ph.placeholder_format.type
-            if ph_type == 2 and ph.has_text_frame:  # BODY
+            if ph_type == 4 and ph.has_text_frame and subtitle_text:
+                ph.text_frame.text = subtitle_text
+            elif ph_type == 2 and ph.has_text_frame:
                 ph.text_frame.text = "\n".join(body_texts)
-                break
-
-        # 2. Migrate non-placeholder objects (pictures, tables, shapes, etc.)
-        ObjectMigrator().migrate_objects(source_slide, new_slide)
 
         return new_slide
 
