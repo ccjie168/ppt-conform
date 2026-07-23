@@ -3976,7 +3976,6 @@ class ContentReplayer:
 
         title_text = semantic_info.get("title_text", "")
         subtitle_text = semantic_info.get("subtitle_text", "")
-        body_texts = semantic_info.get("body_texts", [])
 
         if new_slide.shapes.title and title_text:
             new_slide.shapes.title.text = title_text
@@ -3985,8 +3984,6 @@ class ContentReplayer:
             ph_type = ph.placeholder_format.type
             if ph_type == 4 and ph.has_text_frame and subtitle_text:
                 ph.text_frame.text = subtitle_text
-            elif ph_type == 2 and ph.has_text_frame:
-                ph.text_frame.text = "\n".join(body_texts)
 
         return new_slide
 

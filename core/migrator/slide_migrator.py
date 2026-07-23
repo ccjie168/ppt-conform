@@ -38,11 +38,9 @@ class SlideMigrator:
 
         title_text = semantic_info.get("title_text", "") or self._extract_title(source_slide)
         subtitle_text = semantic_info.get("subtitle_text", "") or self._extract_subtitle(source_slide)
-        body_paragraphs = semantic_info.get("body_texts", []) or self._extract_body_paragraphs(source_slide)
 
         self._fill_title(new_slide, title_text)
         self._fill_subtitle(new_slide, subtitle_text)
-        self._fill_body(new_slide, body_paragraphs)
 
         return new_slide
 

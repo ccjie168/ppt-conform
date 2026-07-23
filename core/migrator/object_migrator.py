@@ -56,9 +56,10 @@ class ObjectMigrator:
         "#cc0000": "#DC2626",
     }
 
-    def __init__(self, text_color="#0A2F24", bg_dark=False):
+    def __init__(self, text_color="#0A2F24", bg_dark=False, skip_title_subtitle=True):
         self.text_color = text_color
         self.bg_dark = bg_dark
+        self.skip_title_subtitle = skip_title_subtitle
 
     def migrate_objects(self, source_slide, new_slide) -> tuple[int, int, dict]:
         """
@@ -185,9 +186,15 @@ class ObjectMigrator:
             return True
         if st == MSO_SHAPE_TYPE.TEXT_BOX:
             semantics = self._analyze_text_box_semantics(shape, new_slide)
+            if self.skip_title_subtitle and semantics in ("title", "subtitle"):
+                return False
             self.migrate_text_box(shape, new_slide, semantics)
             return True
         if st in (MSO_SHAPE_TYPE.AUTO_SHAPE, MSO_SHAPE_TYPE.FREEFORM):
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                semantics = self._analyze_text_box_semantics(shape, new_slide)
+                if self.skip_title_subtitle and semantics in ("title", "subtitle"):
+                    return False
             self.migrate_shape_by_xml(shape, new_slide)
             return True
         if st == MSO_SHAPE_TYPE.LINE:
